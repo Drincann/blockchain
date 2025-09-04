@@ -1,0 +1,22 @@
+{
+  "name": "bc",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "tsx block.test.mts",
+    "start": "tsx src/cli.mts"
+  },
+  "type": "module",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.4",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0"
+  }
+}
