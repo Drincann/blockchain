@@ -1,11 +1,13 @@
 import { Block } from "./block.mts";
 import { ClientInterface, Server } from "./lib/p2p.mts";
 import { hex, hexBytes } from "./util/crypto.mts";
+import { SyncronizedQueue } from "./lib/queue.mts";
 
 export class Node {
   private blocks: Record<string, Block> = { [hex(Block.GENESIS_BLOCK_HASH)]: Block.deserialize(Block.GENESIS_BLOCK) }
   private tail: Block = Block.deserialize(Block.GENESIS_BLOCK)
   private server: Server<'inventory' | 'block'>
+  private queue: SyncronizedQueue = new SyncronizedQueue()
   public constructor() { }
 
   public get current() {
@@ -22,7 +24,7 @@ export class Node {
 
   public start(port: number): void {
     this.server = new Server<'inventory' | 'block'>({ port })
-      .on('inventory', this.onNewBlocks.bind(this))
+      .on('inventory', (...args) => this.queue.schedule(() => this.onNewBlocks(...args)))
       .on('block', this.getBlock.bind(this))
 
     console.log(`Node started on port ${port}`)
