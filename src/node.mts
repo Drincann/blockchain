@@ -24,7 +24,7 @@ export class Node {
 
   public start(port: number): void {
     this.server = new Server<'inventory' | 'block'>({ port })
-      .on('inventory', (...args) => this.queue.schedule(() => this.onNewBlocks(...args)))
+      .on('inventory', (...args) => this.queue.schedule(() => this.onNewBlocks(...args)).catch(() => console.error('Inventory handler error')))
       .on('block', this.getBlock.bind(this))
 
     console.log(`Node started on port ${port}`)
