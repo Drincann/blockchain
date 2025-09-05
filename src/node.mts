@@ -26,6 +26,7 @@ export class Node {
     this.server = new Server<'inventory' | 'block'>({ port })
       .on('inventory', (...args) => this.queue.schedule(() => this.onNewBlocks(...args)).catch(() => console.error('Inventory handler error')))
       .on('block', this.getBlock.bind(this))
+      .onConnect(peer => peer.send('inventory', this.tail.summary))
 
     console.log(`Node started on port ${port}`)
   }
