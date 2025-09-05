@@ -11,16 +11,23 @@ export interface ClientInterface<MessageType extends string> {
   client: Client
   request: (type: MessageType, data: Record<string, any>) => Promise<Record<string, any>>
   respond: (data: Record<string, any>) => void
+  send: (type: MessageType, data: Record<string, any>) => unknown
 }
 
 export class Server<MessageType extends string> {
   private wss: WebSocketServer
   private handlers: Record<string, (message: Record<string, any>, client: ClientInterface<MessageType>) => Promise<any>> = {} as any
+  private connectHandler: (client: ClientInterface<MessageType>) => unknown = () => { }
   public clients: Client[] = []
 
   constructor({ port }: { port: number }) {
     this.wss = new WebSocketServer({ port })
-    this.wss.on('connection', (ws, req) => this.setupSocket(ws, req.socket.remoteAddress + ':' + req.socket.remotePort))
+    this.wss.on('connection', (ws, req) => {
+      const client = this.setupSocket(ws, req.socket.remoteAddress + ':' + req.socket.remotePort)
+      if (client) {
+        this.connectHandler(this.buildPeerContext(client))
+      }
+    })
   }
 
   private setupSocket(ws: WebSocket, address: string): Client | null {
@@ -46,18 +53,7 @@ export class Server<MessageType extends string> {
             return
           }
 
-          handler(message.data, {
-            client,
-            request: (type: MessageType, data: Record<string, any>) => {
-              return client.request({ type, data })
-            },
-            respond: (data: Record<string, any>) => {
-              if (message.id === undefined) {
-                return
-              }
-              ws.send(JSON.stringify({ type: 'response', id: message.id, data }))
-            }
-          }).catch(error => {
+          handler(message.data, this.buildPeerContext(client, message)).catch(error => {
             console.error(`WebSocket ${message.type} error`, error)
           })
         } catch (error) {
@@ -80,8 +76,32 @@ export class Server<MessageType extends string> {
     }
   }
 
+  private buildPeerContext(client: Client, message?: Message): ClientInterface<MessageType> {
+    const ws = client.ws
+    return {
+      client,
+      request: (type: MessageType, data: Record<string, any>) => {
+        return client.request({ type, data })
+      },
+      respond: (data: Record<string, any>) => {
+        if (message?.id === undefined) {
+          return
+        }
+        ws.send(JSON.stringify({ type: 'response', id: message.id, data }))
+      },
+      send: (type: MessageType, data: Record<string, any>) => {
+        ws.send(JSON.stringify({ type, data }))
+      }
+    }
+  }
+
   public on(type: string, handler: (message: Record<string, any>, interfaces: ClientInterface<MessageType>) => Promise<any>) {
     this.handlers[type] = handler
+    return this
+  }
+
+  public onConnect(handler: (client: ClientInterface<MessageType>) => unknown) {
+    this.connectHandler = handler
     return this
   }
 
@@ -104,6 +124,9 @@ export class Server<MessageType extends string> {
         peer.on('open', () => {
           open = true
           resolve(client)
+          if (client) {
+            this.connectHandler(this.buildPeerContext(client))
+          }
         })
 
         setTimeout(() => {
