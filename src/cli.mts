@@ -2,7 +2,7 @@ import { Node } from './node.mts'
 import { hex } from './util/crypto.mts'
 
 const node = new Node()
-await node.start(parseInt(process.argv[2] || '3001'))
+node.start(parseInt(process.argv[2] || '3001'))
 
 
 const write = (chars: string) => {
@@ -34,7 +34,7 @@ while (true) {
 
   if (input[0] === 'mine') {
     const block = node.mine(new Uint8Array(Buffer.from(input.slice(1).join(' '))))
-    write(`mined block: ${hex(block.hash())}\n${JSON.stringify(block.display())}\n`)
+    write(`new block: ${hex(block.hash())}\n${JSON.stringify(block.display(), null, 2)}\n`)
     continue
   }
 
@@ -50,7 +50,6 @@ while (true) {
         write('no peers\n')
         continue
       }
-
       write(`peers: ${peers.join(', ')}\n`)
       continue
     }
@@ -68,15 +67,24 @@ while (true) {
     if (input[1] === undefined) {
       write('usage: block [current | <hash>]\n')
     } else if (input[1] === 'current') {
-      write(`block: ${hex(node.current.hash())}\n${JSON.stringify(node.current.display())}\n`)
+      write(`block: ${hex(node.current.hash())}\n${JSON.stringify(node.current.display(), null, 2)}\n`)
     } else {
-      write(`block: ${hex(node.block(input[1])?.hash())}\n${JSON.stringify(node.block(input[1])?.display())}\n`)
+      const block = node.block(input[1])
+      if (block) {
+        write(JSON.stringify(block.display(), null, 2) + '\n')
+      } else {
+        write(`block not found: ${input[1]}\n`)
+      }
     }
 
     continue
   }
 
-  write('unknown command\n')
+  if (input.length === 0) {
+    continue
+  }
+
+  write(`unknown command: ${input[0]}\n`)
 }
 
 write('bye\n')
