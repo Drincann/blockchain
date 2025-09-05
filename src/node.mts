@@ -3,8 +3,8 @@ import { ClientInterface, Server } from "./lib/p2p.mts";
 import { hex, hexBytes } from "./util/crypto.mts";
 
 export class Node {
-  private blocks: Record<string, Block> = { [hex(Block.GENESIS_BLOCK_HASH)]: Block.desrialize(Block.GENESIS_BLOCK) }
-  private tail: Block = Block.desrialize(Block.GENESIS_BLOCK)
+  private blocks: Record<string, Block> = { [hex(Block.GENESIS_BLOCK_HASH)]: Block.deserialize(Block.GENESIS_BLOCK) }
+  private tail: Block = Block.deserialize(Block.GENESIS_BLOCK)
   private server: Server<'inventory' | 'block'>
   public constructor() { }
 
@@ -56,7 +56,7 @@ export class Node {
     if (isValidStringStringMap(hash2Block)) {
       const blocks = {}
       for (const hash in hash2Block) {
-        blocks[hash] = Block.desrialize(hexBytes(hash2Block[hash]))
+        blocks[hash] = Block.deserialize(hexBytes(hash2Block[hash]))
       }
       return blocks
     }

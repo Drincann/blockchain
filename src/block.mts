@@ -148,7 +148,7 @@ export class Block {
     return true
   }
 
-  public static desrialize(bytes: Uint8Array): Block {
+  public static deserialize(bytes: Uint8Array): Block {
     if (bytes.length < 48) {
       throw new Error('Data must be at least 48 bytes long');
     }
