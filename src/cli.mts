@@ -17,6 +17,12 @@ const read = (): Promise<string> => {
   })
 }
 
+const cleanup = () => {
+  node.stop()
+  process.stdin.removeAllListeners()
+  process.stdin.destroy()
+}
+
 const sleep = (ms: number) => {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -88,5 +94,4 @@ while (true) {
 }
 
 write('bye\n')
-
-process.exit(0)
+cleanup()

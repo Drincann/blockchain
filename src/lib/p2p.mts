@@ -1,5 +1,4 @@
 import { WebSocketServer, WebSocket } from 'ws'
-import { IncomingMessage } from 'http'
 
 export interface Message {
   id?: number,
@@ -18,7 +17,7 @@ export class Server<MessageType extends string> {
   private wss: WebSocketServer
   private handlers: Record<string, (message: Record<string, any>, client: ClientInterface<MessageType>) => Promise<any>> = {} as any
   private connectHandler: (client: ClientInterface<MessageType>) => unknown = () => { }
-  public clients: Client[] = []
+  private clients: Client[] = []
 
   constructor({ port }: { port: number }) {
     this.wss = new WebSocketServer({ port })
@@ -28,6 +27,16 @@ export class Server<MessageType extends string> {
         this.connectHandler(this.buildPeerContext(client))
       }
     })
+  }
+
+  public close() {
+    this.clients.forEach(client => client.ws.terminate())
+    this.clients = []
+    this.wss.close()
+  }
+
+  public getClientsAddresses(): string[] {
+    return this.clients.map(client => client.address)
   }
 
   private setupSocket(ws: WebSocket, address: string): Client | null {

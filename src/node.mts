@@ -14,8 +14,12 @@ export class Node {
     return this.tail
   }
 
+  public stop() {
+    this.server?.close()
+  }
+
   public peer() {
-    return this.server.clients.map(peer => peer.address)
+    return this.server.getClientsAddresses()
   }
 
   public block(hash: string): Block {
