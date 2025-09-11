@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "tsx block.test.mts",
-    "start": "tsx src/cli.mts"
+    "test": "tsx --test test/*",
+    "start": "tsx src/cli.mts",
+    "build": "tsc"
   },
   "type": "module",
   "keywords": [],
