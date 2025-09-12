@@ -107,11 +107,11 @@ export class Server {
       })
 
       ws.on('close', () => {
-        this.peers = this.peers.filter(peer => peer !== peer)
+        this.peers = this.peers.filter(p => p !== peer)
         console.log(`WebSocket client disconnected`)
       })
       ws.on('error', (error) => {
-        this.peers = this.peers.filter(peer => peer !== peer)
+        this.peers = this.peers.filter(p => p !== peer)
         console.error('WebSocket error:', error)
       })
       return peer
