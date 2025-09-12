@@ -1,8 +1,10 @@
 import { WebSocketServer, WebSocket } from "ws"
 import { Peer, Session } from "./peer.mts"
 import { Message, MessageType } from "./types.mts"
+import { config } from "../../config.mts"
 
 export class Server {
+  private nodeId = crypto.randomUUID()
   private wss: WebSocketServer
   private handlers: Record<string, (session: Session) => Promise<any>> = {} as any
   private connectHandler: (session: Session) => unknown = () => { }
@@ -28,7 +30,7 @@ export class Server {
     this.wss.close()
   }
 
-  public on(type: Exclude<MessageType, 'response'>, handler: (session: Session) => Promise<any>) {
+  public on(type: Exclude<MessageType, 'nodeinfo' | 'response'>, handler: (session: Session) => Promise<any>) {
     this.handlers[type] = handler
     return this
   }
@@ -58,7 +60,10 @@ export class Server {
           open = true
           resolve(peer)
           if (peer) {
-            this.connectHandler(peer.createSession())
+            const session = peer.createSession()
+            session.send('nodeinfo', { nodeId: this.nodeId, listenAddress: config.listenAddress })
+
+            this.connectHandler(session)
           }
         })
 
@@ -73,6 +78,25 @@ export class Server {
         resolve(null)
       }
     })
+  }
+
+  private handleNodeInfo(peer: Peer, message: Message) {
+    if (isInvalidHandshake(message.data)) {
+      console.error('Invalid handshake data')
+      peer.ws.close()
+      this.peers = this.peers.filter(p => p !== peer)
+      return
+    }
+    if (message.data.nodeId === this.nodeId) {
+      console.error('Connected to self, closing connection')
+      peer.ws.close()
+      this.peers = this.peers.filter(p => p !== peer)
+      return
+    }
+    if (peer.address.length > 0) {
+      peer.address = message.data.listenAddress
+    }
+    return
   }
 
   private setupSocket(ws: WebSocket, address: string): Peer | null {
@@ -90,6 +114,10 @@ export class Server {
             delete pendingRequests[message.id]
             callback?.(message)
             return
+          }
+
+          if (message.type === 'nodeinfo') {
+            this.handleNodeInfo(peer, message)
           }
 
           const handler = this.handlers[message.type]
@@ -120,5 +148,8 @@ export class Server {
       return null
     }
   }
+}
 
+function isInvalidHandshake(data: Record<string, any>) {
+  return data === undefined || typeof data.nodeId !== 'string' || typeof data.listenAddress !== 'string'
 }
