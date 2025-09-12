@@ -54,8 +54,8 @@ export class Node {
     return false
   }
 
-  private async fetchBlock(peer: Session, hash: string): Promise<Block> {
-    return this.fetchBlocks(peer, [hash]).then(blocks => blocks[hash])
+  private async fetchBlock(peer: Session, hash: string): Promise<Block | undefined> {
+    return this.fetchBlocks(peer, [hash]).then(blocks => blocks[hash]).catch(() => undefined)
   }
 
   private async fetchBlocks(peer: Session, hashes: string[]): Promise<Record<string, Block>> {
@@ -79,12 +79,19 @@ export class Node {
       const orphans = {}
 
       let newBlock = await this.fetchBlock(session, newBlockSummary.hash)
+      if (!newBlock) {
+        return
+      }
+
       let block = newBlock
       orphans[hex(block.hash())] = block
 
       let prevHash = hex(block.prev)
       while (this.blocks[prevHash] === undefined) {
         const prev = await this.fetchBlock(session, prevHash);
+        if (!prev) {
+          return
+        }
         if (prev.isInvalidNext(block)) {
           console.log('Received invalid block from peer: ' + session.peer.address
             + ', current block: ' + JSON.stringify(block.display())
