@@ -1,12 +1,12 @@
 import { Block } from "./block.mts";
-import { ClientInterface, Server } from "./lib/p2p.mts";
+import { Session, Server } from "./lib/p2p/index.mts";
 import { hex, hexBytes } from "./util/crypto.mts";
 import { SyncronizedQueue } from "./lib/queue.mts";
 
 export class Node {
   private blocks: Record<string, Block> = { [hex(Block.GENESIS_BLOCK_HASH)]: Block.deserialize(Block.GENESIS_BLOCK) }
   private tail: Block = Block.deserialize(Block.GENESIS_BLOCK)
-  private server: Server<'inventory' | 'block'>
+  private server: Server
   private queue: SyncronizedQueue = new SyncronizedQueue()
   public constructor() { }
 
@@ -19,7 +19,7 @@ export class Node {
   }
 
   public peer() {
-    return this.server.getClientsAddresses()
+    return this.server.getPeersAddresses()
   }
 
   public block(hash: string): Block {
@@ -27,7 +27,7 @@ export class Node {
   }
 
   public start(port: number): void {
-    this.server = new Server<'inventory' | 'block'>({ port })
+    this.server = new Server({ port })
       .on('inventory', (...args) => this.queue.schedule(() => this.onNewBlocks(...args)).catch(() => console.error('Inventory handler error')))
       .on('block', this.getBlock.bind(this))
       .onConnect(peer => peer.send('inventory', this.tail.summary))
@@ -54,24 +54,23 @@ export class Node {
     return false
   }
 
-  private async fetchBlock(peer: ClientInterface<'inventory' | 'block'>, hash: string): Promise<Block> {
+  private async fetchBlock(peer: Session, hash: string): Promise<Block> {
     return this.fetchBlocks(peer, [hash]).then(blocks => blocks[hash])
   }
 
-  private async fetchBlocks(peer: ClientInterface<'inventory' | 'block'>, hashes: string[]): Promise<Record<string, Block>> {
+  private async fetchBlocks(peer: Session, hashes: string[]): Promise<Record<string, Block>> {
     let hash2Block = await peer.request('block', { hash: hashes });
     if (isValidStringStringMap(hash2Block)) {
       const blocks = {}
       for (const hash in hash2Block) {
         blocks[hash] = Block.deserialize(hexBytes(hash2Block[hash]))
-      }
-      return blocks
+      } return blocks
     }
     return {}
   }
 
-  private async onNewBlocks(req: Record<string, any>, peer: ClientInterface<'inventory' | 'block'>): Promise<void> {
-    const newBlockSummary = req
+  private async onNewBlocks(session: Session): Promise<void> {
+    const newBlockSummary = session.data
     if (Block.isValidBlockSummary(newBlockSummary)) {
       if (this.blocks[newBlockSummary.hash] || this.tail.height > newBlockSummary.height) {
         return
@@ -79,15 +78,15 @@ export class Node {
 
       const orphans = {}
 
-      let newBlock = await this.fetchBlock(peer, newBlockSummary.hash)
+      let newBlock = await this.fetchBlock(session, newBlockSummary.hash)
       let block = newBlock
       orphans[hex(block.hash())] = block
 
       let prevHash = hex(block.prev)
       while (this.blocks[prevHash] === undefined) {
-        const prev = await this.fetchBlock(peer, prevHash);
+        const prev = await this.fetchBlock(session, prevHash);
         if (prev.isInvalidNext(block)) {
-          console.log('Received invalid block from peer: ' + peer.client.address
+          console.log('Received invalid block from peer: ' + session.peer.address
             + ', current block: ' + JSON.stringify(block.display())
             + ', previous block: ' + JSON.stringify(prev?.display())
             + ', expected previous hash: ' + hex(prev?.hash())
@@ -119,10 +118,10 @@ export class Node {
     }
   }
 
-  private async getBlock(data: Record<string, any>, peer: ClientInterface<'inventory' | 'block'>): Promise<void> {
-    const hashes = data.hash
+  private async getBlock(session: Session): Promise<void> {
+    const hashes = session.data?.hash
     if (!Array.isArray(hashes)) {
-      peer.respond({})
+      session.respond({})
       return
     }
 
@@ -130,7 +129,7 @@ export class Node {
     for (const hash of hashes) {
       serializedBlocks[hash] = hex(this.blocks[hash]?.serialize())
     }
-    peer.respond(serializedBlocks)
+    session.respond(serializedBlocks)
   }
 }
 
