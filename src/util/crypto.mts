@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 export function sha256(data: Uint8Array): Uint8Array {
   return new Uint8Array(createHash('sha256').update(data).digest())
 }
@@ -18,4 +18,8 @@ export function hex(data?: Uint8Array): string {
     return ''
   }
   return (Array.from(data)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+export function uuid(): string {
+  return randomUUID()
 }
