@@ -122,6 +122,8 @@ export class Node {
       }
 
       this.tail = newBlock
+
+      this.server.broadcast({ type: 'inventory', data: newBlock.summary })
     }
   }
 

@@ -11,6 +11,7 @@ export interface Session {
 
 export class Peer {
   private syncId = 0
+  public listenAddress: string | null = null
   constructor(
     public address: string,
     public ws: WebSocket,
@@ -48,6 +49,6 @@ export class Peer {
     })
 
     this.ws.send(JSON.stringify(request))
-    return promise.then((message) => (message as any)?.data) as Promise<Record<string, any>>
+    return promise.then((message) => (message as any)?.data ?? {}) as Promise<Record<string, any>>
   }
 }

@@ -10,6 +10,8 @@ export class Server {
   private handlers: Record<string, (session: Session) => Promise<any>> = {} as any
   private connectHandler: (session: Session) => unknown = () => { }
   private peers: Peer[] = []
+  private knownAddresses: Set<string> = new Set()
+  private stopping = false
 
   constructor({ port }: { port: number }) {
     this.wss = new WebSocketServer({ port })
@@ -19,13 +21,34 @@ export class Server {
         this.connectHandler(peer.createSession())
       }
     })
+    this.scheduleRefreshAddresses()
+  }
+
+  private scheduleRefreshAddresses() {
+    setTimeout(async () => {
+      await this.refreshAddresses()
+      this.scheduleRefreshAddresses()
+    }, 60_000)
+  }
+
+  private async refreshAddresses() {
+    const peers = this.randomPeers(2)
+    for (let peer of peers) {
+      const response = await peer.createSession().request('getpeers', {}).catch(() => ({ peers: [] }))
+      if (Array.isArray(response.peers)) {
+        response.peers.forEach((address: string) => {
+          this.knownAddresses.add(address)
+        })
+      }
+    }
   }
 
   public getPeersAddresses(): string[] {
-    return this.peers.map(peer => peer.address)
+    return this.peers.map(peer => peer.listenAddress ?? peer.address)
   }
 
   public close() {
+    this.stopping = true
     this.peers.forEach(peer => peer.ws.terminate())
     this.peers = []
     this.wss.close()
@@ -42,11 +65,33 @@ export class Server {
   }
 
   public broadcast(message: Message) {
-    this.peers.forEach(peer => {
+    const peers: Peer[] = []
+    if (this.peers.length < 8) {
+      peers.push(...this.peers)
+    } else {
+      peers.push(...this.randomPeers(8))
+    }
+
+    peers.forEach(peer => {
       if (peer.ws.readyState === WebSocket.OPEN) {
         peer.ws.send(JSON.stringify(message))
       }
     })
+  }
+
+  private randomPeers(num: number): Peer[] {
+    if (this.peers.length <= num) {
+      return [...this.peers]
+    }
+
+    const peers: Peer[] = []
+    while (peers.length < num) {
+      const peer = this.peers[Math.floor(Math.random() * this.peers.length)]
+      if (!peers.includes(peer)) {
+        peers.push(peer)
+      }
+    }
+    return peers
   }
 
   public connect(address: string): Promise<Peer | null> {
@@ -61,6 +106,7 @@ export class Server {
           open = true
           resolve(peer)
           if (peer) {
+            peer.listenAddress = address
             const session = peer.createSession()
             session.send('nodeinfo', { nodeId: this.nodeId, listenAddress: config.listenAddress })
 
@@ -83,7 +129,7 @@ export class Server {
 
   private handleNodeInfo(peer: Peer, message: Message) {
     if (isInvalidHandshake(message.data)) {
-      console.error('Invalid handshake data')
+      console.error('Invalid nodeinfo data')
       peer.ws.close()
       this.peers = this.peers.filter(p => p !== peer)
       return
@@ -95,7 +141,7 @@ export class Server {
       return
     }
     if (message.data.listenAddress?.trim().length > 0) {
-      peer.address = message.data.listenAddress
+      peer.listenAddress = message.data.listenAddress
     }
     return
   }
@@ -122,6 +168,11 @@ export class Server {
             return
           }
 
+          if (message.type === 'getpeers') {
+            peer.createSession(message).respond({ peers: this.peers.map(p => p.listenAddress).filter(a => a != null) })
+            return
+          }
+
           const handler = this.handlers[message.type]
           if (!handler) {
             console.error(`WebSocket handler for ${message.type} not found`)
@@ -139,6 +190,7 @@ export class Server {
       ws.on('close', () => {
         this.peers = this.peers.filter(p => p !== peer)
         console.log(`WebSocket client disconnected`)
+        this.tryConnectAnother()
       })
       ws.on('error', (error) => {
         this.peers = this.peers.filter(p => p !== peer)
@@ -150,6 +202,28 @@ export class Server {
       return null
     }
   }
+
+
+  private async tryConnectAnother() {
+    while (!this.stopping && this.peers.length < 8 && this.knownAddresses.size > 0) {
+      const address = pop(this.knownAddresses)
+      if (address != null && this.peers.find(p => p.address === address) == null) {
+        const newPeer = await this.connect(address)
+        if (newPeer) {
+          console.log(`Connected to new peer at ${address}`)
+          return
+        }
+      }
+    }
+  }
+}
+
+function pop<T>(set: Set<T>): T | undefined {
+  for (const item of set) {
+    set.delete(item)
+    return item
+  }
+  return undefined
 }
 
 function isInvalidHandshake(data: Record<string, any>) {

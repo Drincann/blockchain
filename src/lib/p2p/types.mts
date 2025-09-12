@@ -4,4 +4,4 @@ export interface Message {
   data: Record<string, any>
 }
 
-export type MessageType = 'inventory' | 'getblock' | 'response' | 'nodeinfo'
+export type MessageType = 'inventory' | 'getblock' | 'response' | 'nodeinfo' | 'getpeers'
