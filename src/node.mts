@@ -29,7 +29,7 @@ export class Node {
   public start(port: number): void {
     this.server = new Server({ port })
       .on('inventory', (...args) => this.queue.schedule(() => this.onNewBlocks(...args)).catch(() => console.error('Inventory handler error')))
-      .on('block', this.getBlock.bind(this))
+      .on('getblock', this.getBlock.bind(this))
       .onConnect(peer => peer.send('inventory', this.tail.summary))
 
     console.log(`Node started on port ${port}`)
@@ -59,7 +59,7 @@ export class Node {
   }
 
   private async fetchBlocks(peer: Session, hashes: string[]): Promise<Record<string, Block>> {
-    let hash2Block = await peer.request('block', { hash: hashes });
+    let hash2Block = await peer.request('getblock', { hash: hashes }).catch(() => ({}))
     if (isValidStringStringMap(hash2Block)) {
       const blocks = {}
       for (const hash in hash2Block) {
