@@ -12,6 +12,7 @@ export class Server {
   private peers: Peer[] = []
   private knownAddresses: Set<string> = new Set()
   private stopping = false
+  private refreshInterval: NodeJS.Timeout | null = null
 
   constructor({ port }: { port: number }) {
     this.wss = new WebSocketServer({ port })
@@ -25,7 +26,7 @@ export class Server {
   }
 
   private scheduleRefreshAddresses() {
-    setTimeout(async () => {
+    this.refreshInterval = setTimeout(async () => {
       await this.refreshAddresses()
       this.scheduleRefreshAddresses()
     }, 60_000)
@@ -52,6 +53,10 @@ export class Server {
     this.peers.forEach(peer => peer.ws.terminate())
     this.peers = []
     this.wss.close()
+    if (this.refreshInterval) {
+      clearTimeout(this.refreshInterval)
+      this.refreshInterval = null
+    }
   }
 
   public on(type: Exclude<MessageType, 'nodeinfo' | 'response'>, handler: (session: Session) => Promise<any>) {
