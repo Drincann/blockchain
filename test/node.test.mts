@@ -43,10 +43,11 @@ function getBlockchainHashes(node: Node): string[] {
   return hashes.reverse() // Start from genesis block
 }
 
-// Safe mining function to ensure timestamp increment
-async function safeMine(node: Node, data: string): Promise<Block> {
-  const block = node.mine(new TextEncoder().encode(data))
-  await waitForSync(10) // Ensure different timestamps
+async function mine(node: Node, data: string): Promise<Block> {
+  const block = await node.mineAsync(new TextEncoder().encode(data))
+  if (block == null) {
+    assert.fail('Failed to mine block')
+  }
   return block
 }
 
@@ -81,7 +82,7 @@ describe('Blockchain Node Sync Tests', () => {
   describe('Test 1: Node A mines a block, Node B connects and syncs successfully', () => {
     it('should sync one block', async () => {
       // Node A mines a block
-      const minedBlock = await safeMine(nodeA, 'test block 1')
+      const minedBlock = await mine(nodeA, 'test block 1')
       console.log(`Node A mined block: ${hex(minedBlock.hash())}`)
 
       // Verify Node A has 2 blocks (genesis + new block)
@@ -112,7 +113,7 @@ describe('Blockchain Node Sync Tests', () => {
       // Node A mines three blocks
       const blocks: Block[] = []
       for (let i = 1; i <= 3; i++) {
-        const minedBlock = await safeMine(nodeA, `test block ${i}`)
+        const minedBlock = await mine(nodeA, `test block ${i}`)
         blocks.push(minedBlock)
         console.log(`Node A mined block ${i}: ${hex(minedBlock.hash())}`)
       }
@@ -144,7 +145,7 @@ describe('Blockchain Node Sync Tests', () => {
   describe('Test 3: Node A mines a block, Node A connects to B and B syncs automatically', () => {
     it('should sync from Node A to Node B', async () => {
       // Node A mines a block
-      const minedBlock = await safeMine(nodeA, 'test block from A')
+      const minedBlock = await mine(nodeA, 'test block from A')
       console.log(`Node A mined block: ${hex(minedBlock.hash())}`)
 
       // Node A connects to Node B
@@ -168,7 +169,7 @@ describe('Blockchain Node Sync Tests', () => {
       // Node A mines three blocks
       const blocks: Block[] = []
       for (let i = 1; i <= 3; i++) {
-        const minedBlock = await safeMine(nodeA, `test block ${i} from A`)
+        const minedBlock = await mine(nodeA, `test block ${i} from A`)
         blocks.push(minedBlock)
         console.log(`Node A mined block ${i}: ${hex(minedBlock.hash())}`)
       }
@@ -199,7 +200,7 @@ describe('Blockchain Node Sync Tests', () => {
       await waitForSync(200)
 
       // Node A mines a block
-      const minedBlockA = await safeMine(nodeA, 'block from A')
+      const minedBlockA = await mine(nodeA, 'block from A')
       console.log(`Node A mined block: ${hex(minedBlockA.hash())}`)
 
       // Wait for Node A's block to sync to Node B
@@ -210,7 +211,7 @@ describe('Blockchain Node Sync Tests', () => {
       assert.equal(hex(nodeB.current.hash()), hex(minedBlockA.hash()), 'Node B should have synced Node A\'s block')
 
       // Node B mines a block
-      const minedBlockB = await safeMine(nodeB, 'block from B')
+      const minedBlockB = await mine(nodeB, 'block from B')
       console.log(`Node B mined block: ${hex(minedBlockB.hash())}`)
 
       // Wait for Node B's block to sync to Node A
@@ -232,7 +233,7 @@ describe('Blockchain Node Sync Tests', () => {
       // Node A mines two blocks
       const blocksA: Block[] = []
       for (let i = 1; i <= 2; i++) {
-        const minedBlock = await safeMine(nodeA, `A block ${i}`)
+        const minedBlock = await mine(nodeA, `A block ${i}`)
         blocksA.push(minedBlock)
         console.log(`Node A mined block ${i}: ${hex(minedBlock.hash())}`)
       }
@@ -240,7 +241,7 @@ describe('Blockchain Node Sync Tests', () => {
       // Node B mines three blocks
       const blocksB: Block[] = []
       for (let i = 1; i <= 3; i++) {
-        const minedBlock = await safeMine(nodeB, `B block ${i}`)
+        const minedBlock = await mine(nodeB, `B block ${i}`)
         blocksB.push(minedBlock)
         console.log(`Node B mined block ${i}: ${hex(minedBlock.hash())}`)
       }
@@ -272,7 +273,7 @@ describe('Blockchain Node Sync Tests', () => {
       // Node A mines two blocks
       const blocksA: Block[] = []
       for (let i = 1; i <= 2; i++) {
-        const minedBlock = await safeMine(nodeA, `A block ${i}`)
+        const minedBlock = await mine(nodeA, `A block ${i}`)
         blocksA.push(minedBlock)
         console.log(`Node A mined block ${i}: ${hex(minedBlock.hash())}`)
       }
@@ -280,7 +281,7 @@ describe('Blockchain Node Sync Tests', () => {
       // Node B mines three blocks
       const blocksB: Block[] = []
       for (let i = 1; i <= 3; i++) {
-        const minedBlock = await safeMine(nodeB, `B block ${i}`)
+        const minedBlock = await mine(nodeB, `B block ${i}`)
         blocksB.push(minedBlock)
         console.log(`Node B mined block ${i}: ${hex(minedBlock.hash())}`)
       }
@@ -310,7 +311,7 @@ describe('Blockchain Node Sync Tests', () => {
   describe('Edge case tests', () => {
     it('should handle empty data blocks', async () => {
       // Node A mines an empty data block
-      const emptyBlock = await safeMine(nodeA, '')
+      const emptyBlock = await mine(nodeA, '')
       console.log(`Node A mined empty block: ${hex(emptyBlock.hash())}`)
 
       // Node B connects to Node A
@@ -328,8 +329,8 @@ describe('Blockchain Node Sync Tests', () => {
     it('should handle large block data', async () => {
       // Create a large data block
       const largeData = new Uint8Array(1000).fill(65) // 1000 'A's
-      const largeBlock = nodeA.mine(largeData)
-      console.log(`Node A mined large block: ${hex(largeBlock.hash())}`)
+      const largeBlock = await nodeA.mineAsync(largeData)
+      console.log(`Node A mined large block: ${hex(largeBlock?.hash())}`)
 
       // Node B connects to Node A
       const connected = await nodeB.addPeer(`localhost:${portA}`)
@@ -339,7 +340,7 @@ describe('Blockchain Node Sync Tests', () => {
 
       // Verify sync success
       assert.equal(getBlockchainLength(nodeB), 2)
-      assert.equal(hex(nodeB.current.hash()), hex(largeBlock.hash()))
+      assert.equal(hex(nodeB.current.hash()), hex(largeBlock?.hash()))
       assert.equal(nodeB.current.data.length, 1000, 'Node B\'s synced block should have 1000 bytes of data')
     })
   })
