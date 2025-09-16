@@ -23,3 +23,13 @@ export function hex(data?: Uint8Array): string {
 export function uuid(): string {
   return randomUUID()
 }
+
+export function randomBytes(length: number): Uint8Array {
+  return new Uint8Array(crypto.getRandomValues(new Uint8Array(length)))
+}
+
+export function bitString(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map(b => b.toString(2).padStart(8, "0"))
+    .join("");
+}
