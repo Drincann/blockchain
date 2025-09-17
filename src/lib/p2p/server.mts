@@ -20,6 +20,7 @@ export class Server {
       const peer = this.setupSocket(ws, req.socket.remoteAddress + ':' + req.socket.remotePort)
       if (peer) {
         this.connectHandler(peer.createSession())
+        this.discoverNewPeersFrom(peer)
       }
     })
     this.scheduleRefreshAddresses()
@@ -35,12 +36,16 @@ export class Server {
   private async refreshAddresses() {
     const peers = this.randomPeers(2)
     for (let peer of peers) {
-      const response = await peer.createSession().request('getpeers', {}).catch(() => ({ peers: [] }))
-      if (Array.isArray(response.peers)) {
-        response.peers.forEach((address: string) => {
-          this.knownAddresses.add(address)
-        })
-      }
+      await this.discoverNewPeersFrom(peer)
+    }
+  }
+
+  private async discoverNewPeersFrom(peer: Peer) {
+    const response = await peer.createSession().request('getpeers', {}).catch(() => ({ peers: [] }))
+    if (Array.isArray(response.peers)) {
+      response.peers.forEach((address: string) => {
+        this.knownAddresses.add(address)
+      })
     }
   }
 
@@ -116,6 +121,7 @@ export class Server {
             session.send('nodeinfo', { nodeId: this.nodeId, listenAddress: config.listenAddress })
 
             this.connectHandler(session)
+            this.discoverNewPeersFrom(peer)
           }
         })
 
@@ -174,7 +180,7 @@ export class Server {
           }
 
           if (message.type === 'getpeers') {
-            peer.createSession(message).respond({ peers: this.peers.map(p => p.listenAddress).filter(a => a != null) })
+            peer.createSession(message).respond({ peers: this.peers.map(p => p.listenAddress).filter(addr => addr != null && addr !== peer.listenAddress) })
             return
           }
 
@@ -194,7 +200,6 @@ export class Server {
 
       ws.on('close', () => {
         this.peers = this.peers.filter(p => p !== peer)
-        console.log(`WebSocket client disconnected`)
         this.tryConnectAnother()
       })
       ws.on('error', (error) => {
@@ -215,7 +220,6 @@ export class Server {
       if (address != null && this.peers.find(p => p.address === address) == null) {
         const newPeer = await this.connect(address)
         if (newPeer) {
-          console.log(`Connected to new peer at ${address}`)
           return
         }
       }
