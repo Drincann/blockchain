@@ -1,7 +1,6 @@
 import { bitString, hex, hexBytes, sha256 } from "./util/crypto.mts"
 import { config } from "./config.mts"
 import { BlockMiner } from "./lib/miner.mts"
-import { diff } from "node:util"
 
 export type Hash = Uint8Array
 
