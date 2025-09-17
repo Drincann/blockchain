@@ -6,5 +6,9 @@ const jsonConfig = JSON.parse(
 export const config = {
   get maxDataBytes(): number {
     return jsonConfig.maxDataBytes ?? 1024
+  },
+
+  get listenAddress(): string | undefined {
+    return process.env.BLOCKCHAIN_SERVER_LISTEN_ADDRESS ?? jsonConfig.listenAddress ?? undefined
   }
 }

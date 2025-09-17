@@ -27,6 +27,23 @@ const sleep = (ms: number) => {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+let stoploop = false
+const mineloop = async (data: string) => {
+  while (1) {
+    if (stoploop) {
+      console.log('mineloop stopped')
+      return
+    }
+    const start = Date.now()
+    const block = await node.mineAsync(new Uint8Array(Buffer.from(data))).catch(() => null)
+    if (block == null) {
+      console.log('mine cancelled')
+      continue
+    }
+    write(`cost: ${Date.now() - start}ms\nnew block: ${hex(block.hash())}\n${JSON.stringify(block.display(), null, 2)}\n`)
+  }
+}
+
 write('\nSimple Blockchain CLI\n')
 write('Enter "q" to quit\n\n')
 
@@ -39,8 +56,19 @@ while (true) {
   }
 
   if (input[0] === 'mine') {
-    const block = node.mine(new Uint8Array(Buffer.from(input.slice(1).join(' '))))
+    const block = node.mine(new Uint8Array(Buffer.from(input.slice(1).join(' ')))).getBlock()
     write(`new block: ${hex(block.hash())}\n${JSON.stringify(block.display(), null, 2)}\n`)
+    continue
+  }
+
+  if (input[0] === 'mineloop') {
+    stoploop = false
+    mineloop(input.slice(1).join(' '))
+    continue
+  }
+
+  if (input[0] === 'stoploop') {
+    stoploop = true
     continue
   }
 
