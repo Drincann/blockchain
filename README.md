@@ -233,6 +233,13 @@ Modify `src/config.json` to adjust blockchain parameters:
 
 ```json
 {
-  "maxDataBytes": 1024 // max data bytes per block
+  "maxDataBytes": 1024, // max data bytes per block
+  "listenAddress": "x.x.x.x:yyyy" // Publicly reachable address, Used for peer discovery and should be reachable by other nodes
 }
+```
+
+**listenAddress**: You can also override it at runtime using the `BLOCKCHAIN_SERVER_LISTEN_ADDRESS` environment variable, for example:
+
+```bash
+BLOCKCHAIN_SERVER_LISTEN_ADDRESS="x.x.x.x:yyyy" pnpm start 3001
 ```
