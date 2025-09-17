@@ -1,29 +1,34 @@
 # Simple Blockchain Implementation
 
-A lightweight blockchain implementation written in TypeScript with P2P networking capabilities. This project demonstrates core blockchain concepts including block creation, mining, peer-to-peer communication, and distributed consensus.
+A simple blockchain implementation in TypeScript with P2P networking and Proof-of-Work mining.
 
 ## Features
 
 - **Blockchain Core**: Complete block structure with serialization/deserialization
-- **Fork Handling**: Intelligent handling of blockchain forks and orphan blocks
-- **P2P Networking**: WebSocket-based peer-to-peer communication
-- **Distributed Sync**: Automatic blockchain synchronization across peers
-- **Mining**: Simple block mining with data validation
+- **P2P Networking**: WebSocket-based peer-to-peer communication, Automatic blockchain synchronization across peers
+- **Proof-of-Work Mining**: Simple mining algorithm with adjustable difficulty
 - **CLI Interface**: Interactive command-line interface for blockchain operations
 
 ## Project Structure
 
 ```
 src/
-├── block.mts          # Core blockchain block implementation
-├── node.mts           # Main blockchain node with P2P capabilities
-├── cli.mts            # Command-line interface
-├── config.mts         # Configuration management
-├── lib/
-│   ├── p2p.mts        # P2P networking implementation
-│   └── queue.mts      # Synchronized queue for handling operations
-└── util/
-    └── crypto.mts     # Cryptographic utilities (SHA-256, hex encoding)
+├── cli.mts                # Command-line interface
+├── block.mts              # Block implementation
+├── node.mts               # Blockchain node with P2P networking
+├── config.json            # Configuration file
+├── config.mts             # Configuration management
+├── lib
+│   ├── miner.mts          # Proof-of-Work mining implementation
+│   ├── queue.mts          # Synchronized queue for handling operations
+│   └── p2p                # P2P networking
+│       ├── index.mts
+│       ├── peer.mts
+│       ├── server.mts
+│       └── types.mts
+└── util
+    ├── crypto.mts        # Cryptographic utilities (SHA-256, hex encoding)
+    └── genesis-miner.mts # Genesis block miner
 ```
 
 ## Build
@@ -63,11 +68,23 @@ Once the node is running, you can use the following commands:
 
 #### Mining
 
+Mine a new block with the specified data (utf-8 encoded string).
+
 ```bash
 mine <data>
 ```
 
-Mine a new block with the specified data (utf-8 encoded string).
+Start mining loop.
+
+```bash
+mineloop <data>
+```
+
+Stop mining loop.
+
+```bash
+stoploop
+```
 
 #### Peer Management
 
@@ -99,21 +116,25 @@ Simple Blockchain CLI
 Enter "q" to quit
 
 > block current
-block: 091c83073b570c5865a11ddf73976839d03a85190ca92df33a7364138ec426df
+block: 6038f6308a3437930d464efa8090837b8bc2710196e05d373fcb741cdc0a7534
 {
   "height": 0,
   "ts": 1749376247272,
   "prev": "0000000000000000000000000000000000000000000000000000000000000000",
+  "difficulty": 1,
+  "nonce": "125c95cf5a41e63f6c1400cf6bbc14bc376bde4b8ac4e7fa3f071b7f0f7a592e",
   "dataHex": "5468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73",
   "dataUtf8": "The Times 03/Jan/2009 Chancellor on brink of second bailout for banks"
 }
 
 > mine HelloWorld
-new block: 02546d1e58257eccf3141ac6d0bafcda02925b7554a2c2715cbb6875e3271fce
+new block: fe8bef47d4621151e9acd433cac054a11c6c26b8d44842c9b3fb625bb9d75b97
 {
   "height": 1,
-  "ts": 1757061175860,
-  "prev": "091c83073b570c5865a11ddf73976839d03a85190ca92df33a7364138ec426df",
+  "ts": 1758100640612,
+  "prev": "6038f6308a3437930d464efa8090837b8bc2710196e05d373fcb741cdc0a7534",
+  "difficulty": 2,
+  "nonce": "0000000000000000000000000000000000000000000000000000000000000000",
   "dataHex": "48656c6c6f576f726c64",
   "dataUtf8": "HelloWorld"
 }
@@ -128,8 +149,10 @@ peers: localhost:3002
 block: 02546d1e58257eccf3141ac6d0bafcda02925b7554a2c2715cbb6875e3271fce
 {
   "height": 1,
-  "ts": 1757061175860,
-  "prev": "091c83073b570c5865a11ddf73976839d03a85190ca92df33a7364138ec426df",
+  "ts": 1758100640612,
+  "prev": "6038f6308a3437930d464efa8090837b8bc2710196e05d373fcb741cdc0a7534",
+  "difficulty": 2,
+  "nonce": "30d892692fe5d61e0acc821f1c9fef531ba6bd4ad05b5a7ec1f51fa486b53ee4",
   "dataHex": "48656c6c6f576f726c64",
   "dataUtf8": "HelloWorld"
 }
@@ -146,6 +169,8 @@ interface BlockData {
   height: number;
   ts: number;
   prev: Uint8Array;
+  difficulty: number;
+  nonce: Uint8Array;
   data: Uint8Array;
 }
 ```
@@ -153,6 +178,8 @@ interface BlockData {
 - **Height**: Block number in the chain
 - **Timestamp**: Unix timestamp of block creation
 - **Previous Hash**: SHA-256 hash of the previous block
+- **Difficulty**: Mining difficulty level (number of leading zeros in hash)
+- **Nonce**: Value used for mining (proof-of-work)
 - **Data**: Variable-length data payload (max 1024 bytes by default)
 
 ### Serialization Format
@@ -162,7 +189,9 @@ Blocks are serialized as:
 - Bytes 0-7: Height (64-bit big-endian integer)
 - Bytes 8-15: Timestamp (64-bit big-endian integer)
 - Bytes 16-47: Previous hash (32 bytes)
-- Bytes 48+: Data (variable length)
+- Bytes 48-48: Difficulty (1 byte)
+- Bytes 49-80: Nonce (32 bytes)
+- Bytes 81+: Data (variable length)
 
 ### P2P Protocol
 
@@ -171,13 +200,15 @@ The network uses WebSocket connections with JSON messages:
 ```ts
 interface Message {
   id?: number;
-  type: "inventory" | "block" | "response";
+  type: "inventory" | "getblock" | "getpeers" | "nodeinfo" | "response";
   data: Record<string, any>;
 }
 ```
 
 - **inventory**: Broadcast new block summaries
-- **block**: Request specific blocks by hash
+- **getblock**: Request specific blocks by hash
+- **getpeers**: Request the list of connected peers
+- **nodeinfo**: Send information about the node on connection
 - **response**: Response to requests
 
 ### Genesis Block
@@ -185,6 +216,8 @@ interface Message {
 The genesis block contains the famous Bitcoin genesis message:
 
 > "The Times 03/Jan/2009 Chancellor on brink of second bailout for banks"
+
+You can modify the genesis block data in `src/block.mts`, and run `npx tsx src/util/genesis-miner.mts` to mine a valid nonce.
 
 ## Testing
 
