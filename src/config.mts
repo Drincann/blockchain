@@ -5,7 +5,7 @@ const jsonConfig = JSON.parse(
 )
 export const config = {
   get maxDataBytes(): number {
-    return jsonConfig.maxDataBytes ?? 1024
+    return jsonConfig.maxDataBytes ?? 10240
   },
 
   get listenAddress(): string | undefined {

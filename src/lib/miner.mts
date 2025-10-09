@@ -33,6 +33,7 @@ export class BlockMiner {
   private run(onSuccess: (block: Block | null) => void) {
     setTimeout(() => {
       if (this.stop) return onSuccess(null);
+      this.block.setTs(Date.now())
       for (let i = 0; i < 100; i++) {
         if (this.stop) return onSuccess(null);
         this.block.setNonce(randomBytes(32))

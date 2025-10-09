@@ -1,5 +1,6 @@
+import { Account } from './lib/transaction/account.mts'
 import { Node } from './node.mts'
-import { hex } from './util/crypto.mts'
+import { hex, hexBytes } from './util/crypto.mts'
 
 const node = new Node()
 node.start(parseInt(process.argv[2] || '3001'))
@@ -55,8 +56,80 @@ while (true) {
     break
   }
 
+
+  if (input[0] === 'importprivatekey') {
+    if (input[1] === undefined) {
+      write('usage: importprivatekey <hex private key>\n')
+      continue
+    }
+
+    try {
+      node.importAccount(new Account(hexBytes(input[1])))
+    } catch (e) {
+      write(`failed to import private key: ${(e as Error).message}\n`)
+    }
+    continue
+  }
+
+  if (input[0] === 'balance') {
+    const specified = input[1]
+    if (specified) {
+      const balance = node.getBalance(hexBytes(specified))
+      write(`balance: ${balance} jks (${balance / 100_000_000} zhaofeng)\n`)
+      continue
+    }
+
+    const balance = node.getBalance()
+    write(`balance: ${balance} jks (${balance / 100_000_000} zhaofeng)\n`)
+    continue
+  }
+
+  if (input[0] === 'send') {
+    if (input.length < 3) {
+      write('usage: send <toPublicKey> <amount>\n')
+      continue
+    }
+
+    const toPublicKey = hexBytes(input[1])
+    const amount = parseInt(input[2])
+    if (isNaN(amount) || amount <= 0) {
+      write('amount must be a positive integer, in jks (1 zhaofeng = 100,000,000 jks)\n')
+      continue
+    }
+
+    try {
+      const tx = node.send(toPublicKey, amount)
+      write(`sent transaction: ${hex(tx.id)}\n`)
+    } catch (e: any) {
+      write(`failed to send transaction: ${e.message}\n`)
+    }
+    continue
+  }
+
+  if (input[0] === 'account') {
+    write(`balance: ${node.getBalance()} jks (${node.getBalance() / 100_000_000} zhaofeng)\n\n`)
+    write(`publicKey: ${hex(node.account.publicKey)}\n`)
+    write(`privateKey: ${hex(node.account.privateKey)}\n`)
+    continue
+  }
+
   if (input[0] === 'mine') {
-    const block = node.mine(new Uint8Array(Buffer.from(input.slice(1).join(' ')))).getBlock()
+    const start = Date.now()
+    const block = await node.mineAsync(new Uint8Array(Buffer.from(input.slice(1).join(' ')))).catch(() => null)
+    const cost = Date.now() - start
+
+    if (block == null) {
+      console.log('mine cancelled')
+      continue
+    }
+
+    write(`cost: ${cost}ms\n`)
+    write(`new block: ${hex(block.hash())}\n${JSON.stringify(block.display(), null, 2)}\n`)
+    continue
+  }
+
+  if (input[0] === 'mineasync') {
+    const block = node.submitMine(new Uint8Array(Buffer.from(input.slice(1).join(' ')))).getBlock()
     write(`new block: ${hex(block.hash())}\n${JSON.stringify(block.display(), null, 2)}\n`)
     continue
   }
@@ -99,8 +172,6 @@ while (true) {
 
   if (input[0] === 'block') {
     if (input[1] === undefined) {
-      write('usage: block [current | <hash>]\n')
-    } else if (input[1] === 'current') {
       write(`block: ${hex(node.current.hash())}\n${JSON.stringify(node.current.display(), null, 2)}\n`)
     } else {
       const block = node.block(input[1])
@@ -111,6 +182,69 @@ while (true) {
       }
     }
 
+    continue
+  }
+
+  /**
+   * blocktxs <blockhash>
+   */
+  if (input[0] == 'blocktxs') {
+    if (input.length < 2) {
+      write('usage: blocktxs <blockhash>\n')
+      continue
+    }
+
+    const block = node.block(input[1])
+    if (!block) {
+      write(`block not found: ${input[1]}\n`)
+      continue
+    }
+
+    write(`transactions:\n${[block.coinbase, ...block.transactions].map((tx, i) => i + ': ' + hex(tx.id)).join('\n')}\n`)
+    continue
+  }
+
+  /**
+   * tx <txid>
+   */
+  if (input[0] == 'tx') {
+    if (input.length < 2) {
+      write('usage: tx <txid>\n')
+      continue
+    }
+
+    const { tx, block } = node.transaction(input[1]) ?? {}
+    if (!tx) {
+      write(`transaction not found: ${input[1]}\n`)
+      continue
+    }
+
+    write(`block: ${block ? hex(block.hash()) : 'in mempool'}\n`)
+    write(`transaction: ${JSON.stringify(tx.display(), null, 2)}\n`)
+    continue
+  }
+
+  /**
+   * unspent <publicKey>
+   */
+  if (input[0] == 'unspent') {
+    const specified = input[1]
+    if (specified) {
+      const unspent = node.getUnspentOutputs(hexBytes(specified))
+      if (unspent.length === 0) {
+        write('no unspent outputs\n')
+        continue
+      }
+      write(`unspent outputs:\n${unspent.map((u, i) => i + ': ' + JSON.stringify(u.display(), null, 2)).join('\n')}\n`)
+      continue
+    }
+
+    const unspent = node.getUnspentOutputs()
+    if (unspent.length === 0) {
+      write('no unspent outputs\n')
+      continue
+    }
+    write(`unspent outputs:\n${unspent.map((u, i) => i + ': ' + JSON.stringify(u.display(), null, 2)).join('\n')}\n`)
     continue
   }
 

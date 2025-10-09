@@ -3,22 +3,43 @@ import { Session, Server } from "./lib/p2p/index.mts";
 import { hex, hexBytes } from "./util/crypto.mts";
 import { SyncronizedQueue } from "./lib/queue.mts";
 import { BlockMiner } from "./lib/miner.mts";
+import { Transaction, UTxOut, TxIn, UTxOuts, TxOut } from "./lib/transaction/transaction.mts";
+import { Account } from "./lib/transaction/account.mts";
 
 
-const BLOCK_GENERATION_TARGET_IN_MILLS = 10_000
+const COINBASE_REWARD = 5_000_000_000
+const REWARD_HALVING_EVERY_BLOCKS = 210_000
+const BLOCK_GENERATION_TARGET_IN_MILLS = 10_000 // 10 seconds
 const DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS = 10
+const MEDIAN_TIME_PAST_WINDOW = 11
+const MAX_FUTURE_DRIFT_IN_MILLS = 1000 * 60 * 2 // 2 minutes
 
+/**
+ * A full node in the blockchain network
+ */
 export class Node {
-  private blocks: Record<string, Block> = { [hex(Block.GENESIS_BLOCK_HASH)]: Block.deserialize(Block.GENESIS_BLOCK) }
-  private tail: Block = Block.deserialize(Block.GENESIS_BLOCK)
+  private blocks: Map<string, Block> = new Map([[hex(Block.GENESIS_BLOCK_HASH), Block.deserialize(Block.GENESIS_BLOCK)]])
+  private tip: Block = Block.deserialize(Block.GENESIS_BLOCK)
   private server: Server
   private queue: SyncronizedQueue = new SyncronizedQueue()
   private mining: BlockMiner | null = null
+  private _account: Account = new Account()
+
+  private transactionPool: Record<string, Transaction> = {}
+  private uTxOuts: UTxOuts = new UTxOuts()
 
   public constructor() { }
 
   public get current() {
-    return this.tail
+    return this.tip
+  }
+
+  public get account() {
+    return this._account
+  }
+
+  public importAccount(account: Account) {
+    this._account = account
   }
 
   public stop() {
@@ -29,15 +50,43 @@ export class Node {
     return this.server.getPeersAddresses()
   }
 
-  public block(hash: string): Block {
-    return this.blocks[hash]
+  public block(hash: string): Block | undefined {
+    return this.blocks.get(hash)
+  }
+
+  public transaction(id: string): { tx: Transaction, block?: Block } | undefined {
+    const idBuffer = Buffer.from(id, 'hex')
+    // search from blocks
+    for (let block: Block | null = this.tip; block != null; block = block.prev ? this.blocks.get(hex(block.prev)) ?? null : null) {
+      if (idBuffer.equals(block.coinbase.id)) {
+        return { tx: block.coinbase, block }
+      }
+
+      const tx = block.transactions.find(tx => idBuffer.equals(tx.id))
+      if (tx) {
+        return { tx, block }
+      }
+    }
+
+    if (this.transactionPool[id]) {
+      return { tx: this.transactionPool[id] }
+    }
+
+    return undefined
   }
 
   public start(port: number): void {
     this.server = new Server({ port })
-      .on('inventory', (...args) => this.queue.schedule(() => this.onNewBlocks(...args)).catch(() => console.error('Inventory handler error')))
+      .on('blockinv', (...args) => this.queue.schedule(() => this.onNewBlocks(...args)).catch(() => {
+        console.error('Inventory handler error')
+      }))
       .on('getblock', this.getBlock.bind(this))
-      .onConnect(peer => peer.send('inventory', this.tail.summary))
+      .on('txinv', this.onNewTxs.bind(this))
+      .on('gettx', this.getTxs.bind(this))
+      .onConnect(peer => {
+        peer.send('blockinv', this.tip.summary)
+        peer.send('txinv', { txids: Object.keys(this.transactionPool) })
+      })
 
     console.log(`Node started on port ${port}`)
   }
@@ -47,18 +96,18 @@ export class Node {
       return this.mining.then(v => v)
     }
 
-    const newBlock = this.tail.generate({ data, difficulty: this.getCurrentDifficulty() })
+    const newBlock = this.generateBlock(data)
     this.mining = newBlock.mine()
     this.tryAccept(await this.mining)
     return await this.mining
   }
 
-  public mine(data: Uint8Array): BlockMiner {
+  public submitMine(data: Uint8Array): BlockMiner {
     if (this.mining?.isNotFinish()) {
       return this.mining
     }
 
-    const newBlock = this.tail.generate({ data, difficulty: this.getCurrentDifficulty() })
+    const newBlock = this.generateBlock(data)
     this.mining = newBlock.mine()
 
     this.mining.then(minedBlock => {
@@ -68,43 +117,132 @@ export class Node {
     return this.mining
   }
 
-  private tryAccept(minedBlock: Block | null) {
-    if (!minedBlock) return
-    if (this.tail.height > minedBlock.height) {
-      console.log('Rejected mined block: ' + JSON.stringify(minedBlock.display()))
-      return
+  public send(to: Uint8Array, amount: number): Transaction {
+    const uTxOuts: UTxOut[] = this.uTxOuts.filter(UTxOuts.accountFilter(this.account.publicKey)).sort((a, b) => (a.output.amount || 0) - (b.output.amount || 0))
+    const total = uTxOuts.reduce((sum, uTxOut) => sum + (uTxOut.output.amount || 0), 0)
+    if (total < amount) {
+      throw new Error('Insufficient balance')
     }
 
-    this.tail.connect(minedBlock);
-    this.tail = minedBlock;
-    this.blocks[hex(minedBlock.hash())] = minedBlock;
+    const willSpend: UTxOut[] = []
+    let accumulated = 0
+    for (const uTxOut of uTxOuts) {
+      willSpend.push(uTxOut)
+      accumulated += (uTxOut.output.amount || 0)
+      if (accumulated >= amount) {
+        break
+      }
+    }
 
-    this.server.broadcast({ type: 'inventory', data: minedBlock.summary });
+    const tx = new Transaction()
+    for (const uTxOut of willSpend) {
+      tx.addInput(new TxIn(uTxOut.txid, uTxOut.index))
+    }
+    tx.addOutput(new TxOut(amount, to))
+    if (accumulated > amount) {
+      tx.addOutput(new TxOut(accumulated - amount, this.account.publicKey))
+    }
+    for (let i = 0; i < tx.inputs.length; i++) {
+      this.account.signTxIn(tx, i)
+    }
+
+    this.transactionPool[hex(tx.id)] = tx
+    this.server.broadcast({ type: 'txinv', data: { txids: [hex(tx.id)] } })
+
+    return tx
+  }
+
+  public getBalance(pubkey?: Uint8Array): number {
+    return this.uTxOuts.getBalance(pubkey || this.account.publicKey)
+  }
+
+  public getUnspentOutputs(pubkey?: Uint8Array): UTxOut[] {
+    return this.uTxOuts.filter(UTxOuts.accountFilter(pubkey || this.account.publicKey))
+  }
+
+  private generateBlock(data?: Uint8Array): Block {
+    const block = this.tip.generate({ difficulty: this.getCurrentDifficulty() })
+    const coinbase = Transaction.buildCoinbaseTx(
+      this.account.publicKey,
+      this.getCoinbaseRewardAtHeight(block.height), // fees will be added later
+      block.height,
+      data
+    )
+    if (!block.addTransaction(coinbase)) {
+      throw new Error('Failed to add coinbase transaction to the new block, data size may exceed the limit')
+    }
+
+    const txs: Transaction[] = []
+    for (const tx of Object.values(this.transactionPool)) {
+      if (!block.addTransaction(tx)) { // block is full
+        break
+      }
+
+      txs.push(tx)
+    }
+    coinbase.outputs[0].amount += this.calculateTotalFees(this.transactionPool)
+    return block
+  }
+
+  private calculateTotalFees(transactionPool: Record<string, Transaction>): number {
+    return Object.values(transactionPool).reduce((total, tx) => total + this.getTxInAmount(tx) - tx.outputValue, 0)
+  }
+
+  private getTxInAmount(tx: Transaction) {
+    return tx.inputs.reduce((total, input) => {
+      const uTxOut = this.uTxOuts.get(input)
+      if (!uTxOut) {
+        throw new Error('Transaction input UTxOut not found when calculating transaction fees')
+      }
+
+      return total + (uTxOut ? uTxOut.output.amount || 0 : 0)
+    }, 0)
+  }
+
+  private tryAccept(minedBlock: Block | null) {
+    if (!minedBlock) return
+    this.onNewBlock(minedBlock)
+  }
+
+  private getExpectedDifficulty(prev: Block, lastDuration: number): number {
+    if (prev.height % DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS !== 0) {
+      return prev.difficulty
+    }
+
+    const expected = BLOCK_GENERATION_TARGET_IN_MILLS * DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS
+
+    if (lastDuration < expected / 2) {
+      return Math.min(prev.difficulty + 1, 2 << 7)
+    }
+    if (lastDuration > expected * 2) {
+      return Math.max(prev.difficulty - 1, 1)
+    }
+    return prev.difficulty
   }
 
   private getCurrentDifficulty(): number {
-    if (this.tail.height % DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS !== 0) {
-      return this.tail.difficulty
+    if (this.tip.height % DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS !== 0) {
+      return this.tip.difficulty
     }
 
-    const end = this.tail.ts
+    const end = this.tip.ts
     const start = this.top(9).ts
     const duration = end - start
     const expected = BLOCK_GENERATION_TARGET_IN_MILLS * DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS
 
     if (duration < expected / 2) {
-      return Math.min(this.tail.difficulty + 1, 2 << 7)
+      return Math.min(this.tip.difficulty + 1, 2 << 7)
     }
     if (duration > expected * 2) {
-      return Math.max(this.tail.difficulty - 1, 1)
+      return Math.max(this.tip.difficulty - 1, 1)
     }
-    return this.tail.difficulty
+    return this.tip.difficulty
   }
 
   private top(n: number): Block {
-    let block = this.tail
+    let block = this.tip
     for (let i = 0; i < n; i++) {
-      const prev = this.blocks[hex(block.prev)]
+      const prev = this.blocks.get(hex(block.prev))
       if (prev == null) {
         return block
       }
@@ -127,6 +265,17 @@ export class Node {
     return this.fetchBlocks(peer, [hash]).then(blocks => blocks[hash]).catch(() => undefined)
   }
 
+  private async fetchBatchBlocks(peer: Session, frontier: string, batch: number): Promise<Record<string, Block>> {
+    let hash2Block = await peer.request('getblock', { frontier, batch }).catch(() => ({}))
+    if (isValidStringStringMap(hash2Block)) {
+      const blocks = {}
+      for (const hash in hash2Block) {
+        blocks[hash] = Block.deserialize(hexBytes(hash2Block[hash]))
+      }
+      return blocks
+    }
+    return {}
+  }
   private async fetchBlocks(peer: Session, hashes: string[]): Promise<Record<string, Block>> {
     let hash2Block = await peer.request('getblock', { hash: hashes }).catch(() => ({}))
     if (isValidStringStringMap(hash2Block)) {
@@ -139,77 +288,390 @@ export class Node {
     return {}
   }
 
-  private async onNewBlocks(session: Session): Promise<void> {
-    const newBlockSummary = session.data
-    if (Block.isValidBlockSummary(newBlockSummary)) {
-      if (this.blocks[newBlockSummary.hash] || this.tail.height > newBlockSummary.height) {
-        return
-      }
-
-      const orphans = {}
-
-      let newBlock = await this.fetchBlock(session, newBlockSummary.hash)
-      if (!newBlock) {
-        return
-      }
-
-      let block = newBlock
-      orphans[hex(block.hash())] = block
-
-      let prevHash = hex(block.prev)
-      while (this.blocks[prevHash] === undefined) {
-        const prev = await this.fetchBlock(session, prevHash);
-        if (!prev) {
-          return
-        }
-        if (prev.isInvalidNext(block) || prev.isProofInvalid()) {
-          console.log('Received invalid block from peer: ' + session.peer.address
-            + ', current block: ' + JSON.stringify(block.display())
-            + ', previous block: ' + JSON.stringify(prev?.display())
-            + ', expected previous hash: ' + hex(prev?.hash())
-            + ', actual previous hash: ' + hex(block.prev)
-          )
-        }
-
-        prev.connect(block)
-        orphans[prevHash] = prev
-
-        block = prev
-        prevHash = hex(block.prev)
-      }
-
-      const fork = this.blocks[prevHash]
-      let toDeleteBlock = fork.next
-      fork.connect(block)
-
-      while (toDeleteBlock) {
-        delete this.blocks[hex(toDeleteBlock.hash())]
-        toDeleteBlock = toDeleteBlock.next
-      }
-
-      for (const hash in orphans) {
-        this.blocks[hash] = orphans[hash]
-      }
-
-      this.mining?.cancel()
-      this.tail = newBlock
-
-      this.server.broadcast({ type: 'inventory', data: newBlock.summary })
-    }
-  }
-
-  private async getBlock(session: Session): Promise<void> {
-    const hashes = session.data?.hash
-    if (!Array.isArray(hashes)) {
-      session.respond({})
+  private async onNewBlock(block: Block): Promise<void> {
+    if (this.blocks.get(hex(block.hash())) || this.tip.height > block.height) {
       return
     }
 
-    const serializedBlocks = {}
-    for (const hash of hashes) {
-      serializedBlocks[hash] = hex(this.blocks[hash]?.serialize())
+    const orphans = { [hex(block.hash())]: block } as Record<string, Block>
+
+    let prevHash = hex(block.prev)
+    const fork = this.blocks.get(prevHash)
+    if (!fork) {
+      throw new Error('Previous block not found')
     }
-    session.respond(serializedBlocks)
+
+    try {
+      if (fork.next == null) {
+        this.validateNewBlocksAndUpdateUTxOuts(orphans, block, block)
+      } else {
+        this.validateDifficulty(fork.next, orphans)
+        this.validateAndRecalculateUTxOuts(orphans, block, block)
+      }
+    } catch {
+      // validation failed
+      return
+    }
+
+    this.mining?.cancel()
+
+    let oldForkNext = fork.next
+    fork.connect(block)
+
+    while (oldForkNext) {
+      this.blocks.delete(hex(oldForkNext.hash()))
+      oldForkNext = oldForkNext.next
+    }
+
+    for (const hash in orphans) {
+      this.blocks.set(hash, orphans[hash])
+    }
+
+    this.tip = block
+    this.server.broadcast({ type: 'blockinv', data: block.summary })
+  }
+
+  private async onNewBlocks(session: Session): Promise<void> {
+    const start = Date.now()
+    const newBlockSummary = session.data
+    if (!Block.isValidBlockSummary(newBlockSummary)) {
+      return
+    }
+    if (this.blocks.get(newBlockSummary.hash)) {
+      return
+    }
+    const orphans = {} as Record<string, Block>
+    let newBlock = await this.fetchBlock(session, newBlockSummary.hash)
+    if (!newBlock) {
+      return
+    }
+    let block = newBlock
+    orphans[hex(block.hash())] = block
+    let frontier = hex(block.hash())
+
+    const MAX_FETCH_BATCH = 1024
+    let batch = 2
+    while (!this.blocks.has(hex(block.prev))) {
+      const hash2block = await this.fetchBatchBlocks(session, frontier, batch)
+      if (Object.keys(hash2block).length === 0) {
+        throw new Error('Failed to fetch previous blocks from peer')
+      }
+      if (hash2block[hex(block.prev)] == null) {
+        throw new Error('Peer returned inconsistent block data')
+      }
+
+      while (!this.blocks.has(hex(block.prev)) && hash2block[hex(block.prev)] != null) {
+        const prevHash = hex(block.prev)
+        const prev = hash2block[prevHash]
+        prev.connect(block)
+        orphans[prevHash] = prev
+        block = prev
+      }
+
+      frontier = hex(block.hash())
+      batch = Math.min(batch * 2, MAX_FETCH_BATCH)
+    }
+
+    const fork = this.blocks.get(hex(block.prev))
+    if (!fork) {
+      throw new Error('Previous block not found')
+    }
+    try {
+      if (fork.next == null) {
+        this.validateNewBlocksAndUpdateUTxOuts(orphans, block, newBlock)
+      } else {
+        this.validateDifficulty(fork.next, orphans)
+        this.validateAndRecalculateUTxOuts(orphans, block, newBlock)
+      }
+    } catch (err) {
+      // validation failed
+      console.log('Received invalid block chain from peer: ' + session.peer.address)
+      console.error(err)
+      return
+    }
+    this.mining?.cancel()
+    let oldForkNext = fork.next
+    fork.connect(block)
+    while (oldForkNext) {
+      this.blocks.delete(hex(oldForkNext.hash()))
+      oldForkNext = oldForkNext.next
+    }
+    for (const hash in orphans) {
+      this.blocks.set(hash, orphans[hash])
+    }
+    this.tip = newBlock
+    this.server.broadcast({ type: 'blockinv', data: newBlock.summary })
+    if (Object.keys(orphans).length > 1) {
+      const cost = Date.now() - start
+      console.log(`Synchronized ${orphans.length} blocks from peer: ${session.peer.address}, cost: ${cost}ms`)
+    }
+  }
+
+  private validateDifficulty(localBlockStart: Block | null, incomingBlocks: Record<string, Block>) {
+    if (!localBlockStart) {
+      return
+    }
+
+    const incomingDifficulty = Object.values(incomingBlocks).reduce((sum, block) => sum + 2 ** block.difficulty, 0)
+    const localDifficulty = (() => {
+      let total = 0
+      for (let block: Block | null = localBlockStart; block != null; block = block.next) {
+        total += 2 ** block.difficulty
+      }
+      return total
+    })()
+
+    if (incomingDifficulty >= localDifficulty) {
+      return
+    }
+
+    throw new Error('Incoming chain has insufficient cumulative difficulty')
+  }
+
+  private validateNewBlocksAndUpdateUTxOuts(blocks: Record<string, Block>, start: Block, tip: Block, uTxOutsState?: UTxOuts) {
+    if (tip.ts >= Date.now() + MAX_FUTURE_DRIFT_IN_MILLS) {
+      throw new Error('Block timestamp too far in the future')
+    }
+
+    const last = (tail: Block, n: number): Block => {
+      let block = tail
+      for (let i = 0; i < n; i++) {
+        const prev = blocks[hex(block.prev)] ?? this.blocks.get(hex(block.prev))
+        if (prev == null) {
+          return block
+        }
+        block = prev
+      }
+
+      return block
+    }
+
+    function mtp(tail: Block): number {
+      return last(tail, Math.floor(MEDIAN_TIME_PAST_WINDOW / 2)).ts
+    }
+
+    let prev = this.blocks.get(hex(start.prev))
+    if (!prev) {
+      throw new Error('Previous block not found')
+    }
+
+    // utxos copy
+    const uTxOuts: UTxOuts = (uTxOutsState ?? this.uTxOuts).copy()
+
+    // validate blocks
+    for (let block: Block | null = start; block != null; block = block.next) {
+      const duration = prev.ts - last(block, 10).ts
+      const expectedDifficulty = this.getExpectedDifficulty(prev, duration)
+
+      if (prev.isInvalidNext(block, expectedDifficulty, mtp(prev))) {
+        throw new Error('Invalid block sequence or proof')
+      }
+
+      // validate transactions
+      let totalFee = 0
+      for (let tx of block.transactions) {
+        // assert tx inputs all refer to unspent outputs
+        const referencedUTxOuts: (UTxOut | undefined)[] = tx.inputs.map(input => uTxOuts.get(input))
+        if (referencedUTxOuts.includes(undefined)) {
+          throw new Error('Transaction input UTxOut not found')
+        }
+
+        // assert total input >= total output
+        const totalIn = referencedUTxOuts.reduce((sum, uTxOut) => sum + (uTxOut!.output.amount || 0), 0)
+        const totalOut = tx.outputs.reduce((sum, output) => sum + output.amount, 0)
+        if (totalIn < totalOut) {
+          throw new Error('Transaction outputs exceed inputs')
+        }
+
+        // verify all input signatures
+        for (let i = 0; i < tx.inputs.length; i++) {
+          const input = tx.inputs[i]
+          if (!input.signed()) {
+            throw new Error('Transaction input not signed')
+          }
+          if (!Account.verifyTxIn(tx, i, referencedUTxOuts[i]!.output.publicKey)) {
+            throw new Error('Transaction input signature invalid')
+          }
+        }
+
+        // update UTxOuts
+        referencedUTxOuts.forEach(uTxOut => uTxOuts.remove(uTxOut!))
+        UTxOut.fromTransaction(block.hash(), tx).forEach(uTxOut => uTxOuts.add(uTxOut))
+
+        totalFee += (totalIn - totalOut)
+      }
+
+      // validate coinbase transaction
+      const coinbase = block.coinbase
+      if (coinbase.inputs.length !== 1 || coinbase.inputs[0].index !== block.height || coinbase.outputs.length !== 1) {
+        throw new Error('Invalid coinbase transaction')
+      }
+
+      const maxCoinbaseOut = this.getCoinbaseRewardAtHeight(block.height) + totalFee
+      if (coinbase.outputs[0].amount > maxCoinbaseOut) {
+        throw new Error('Coinbase transaction output exceeds maximum')
+      }
+
+      // update UTxOuts for coinbase
+      UTxOut.fromTransaction(block.hash(), coinbase).forEach(uTxOut => uTxOuts.add(uTxOut))
+
+      prev = block
+    }
+
+    // all valid, commit UTxOuts
+    this.uTxOuts = uTxOuts
+
+    // update transaction pool
+    for (let existsTx of Object.values(this.transactionPool)) {
+      for (let input of existsTx.inputs) {
+        if (this.uTxOuts.get(input) === undefined) {
+          delete this.transactionPool[hex(existsTx.id)]
+          break
+        }
+      }
+    }
+  }
+
+  private getCoinbaseRewardAtHeight(height: number): number {
+    return Math.floor(COINBASE_REWARD / (2 ** Math.floor(height / REWARD_HALVING_EVERY_BLOCKS)))
+  }
+
+  /**
+   * Recalculate UTxOuts from genesis to fork, then validate new chain from start to tip
+   * This is very inefficient, the best way is to rollback UTxOuts from tip to fork, but it's complex to implement, so make it work first
+   */
+  private validateAndRecalculateUTxOuts(blocks: Record<string, Block>, start: Block, tip: Block) {
+    // recalculate UTxOuts from genesis to fork
+    const fork = this.blocks.get(hex(start.prev))
+    if (!fork) {
+      throw new Error('Previous block not found')
+    }
+
+    const uTxOuts: { [txidAndOutIndex: string]: UTxOut } = {}
+    const uTxOutId = (input: TxIn | UTxOut) => `${input.txid}:${input.index}`
+
+    for (let block: Block | null = Block.deserialize(Block.GENESIS_BLOCK); block != null && block !== fork.next; block = block.next) {
+      for (let tx of block.transactions) {
+        const referencedUTxOuts: (UTxOut | undefined)[] = tx.inputs.map(input => uTxOuts[uTxOutId(input)])
+        if (referencedUTxOuts.includes(undefined)) {
+          throw new Error('Transaction input UTxOut not found during recalculation')
+        }
+
+        referencedUTxOuts.forEach(uTxOut => delete uTxOuts[uTxOutId(uTxOut!)])
+        UTxOut.fromTransaction(block.hash(), tx).forEach(uTxOut => uTxOuts[uTxOutId(uTxOut)] = uTxOut)
+      }
+    }
+
+    // validate new blocks and update UTxOuts
+    this.validateNewBlocksAndUpdateUTxOuts(blocks, start, tip, new UTxOuts(Object.values(uTxOuts)))
+  }
+
+  private async getBlock(session: Session): Promise<void> {
+    const { hash: hashes, frontier, batch } = session.data ?? {}
+
+    if (Array.isArray(hashes)) {
+      const serializedBlocks = {}
+      for (const hash of hashes) {
+        serializedBlocks[hash] = hex(this.blocks.get(hash)?.serialize())
+      }
+      session.respond(serializedBlocks)
+      return
+    }
+
+    if (typeof frontier === 'string' && typeof batch === 'number' && batch >= 1) {
+      const blockBatch: Block[] = []
+      let block = this.blocks.get(frontier)
+      while (block && blockBatch.length < batch) {
+        block = this.blocks.get(hex(block.prev))
+        if (!block) {
+          break
+        }
+        blockBatch.push(block)
+      }
+
+      session.respond(blockBatch.reduce((blockMap, block) => {
+        blockMap[hex(block.hash())] = hex(block.serialize())
+        return blockMap
+      }, {} as Record<string, string>))
+      return
+    }
+
+    session.respond({})
+  }
+
+  private async getTxs(session: Session): Promise<void> {
+    const txids = session.data?.txids
+    if (!Array.isArray(txids)) {
+      session.respond({ txs: Object.values(this.transactionPool).map(tx => tx.serialize()) })
+      return
+    }
+
+    session.respond({ txs: txids.filter(txid => this.transactionPool[txid]).map(txid => hex(this.transactionPool[txid].serialize())) })
+  }
+
+  private async onNewTxs(session: Session): Promise<void> {
+    const txids = session.data?.txids
+    if (!Array.isArray(txids)) {
+      return
+    }
+
+    const unknownTxids = txids.filter(txid => !this.transactionPool[txid])
+    if (unknownTxids.length === 0) {
+      return
+    }
+
+    const response = await session.request('gettx', { txids: unknownTxids }).catch(() => null)
+    if (!Array.isArray(response?.txs)) {
+      return
+    }
+
+    const validTxIds = new Set<string>()
+    for (const serializedTx of response.txs) {
+      try {
+        const incomingTx = Transaction.deserialize(hexBytes(serializedTx))
+
+        // assert tx inputs all refer to unspent outputs
+        const referencedUTxOuts: (UTxOut | undefined)[] = incomingTx.inputs.map(input => this.uTxOuts.get(input))
+        if (referencedUTxOuts.includes(undefined)) {
+          throw new Error('Transaction input UTxOut not found')
+        }
+
+        // assert total input >= total output
+        const totalIn = referencedUTxOuts.reduce((sum, uTxOut) => sum + (uTxOut!.output.amount || 0), 0)
+        const totalOut = incomingTx.outputs.reduce((sum, output) => sum + output.amount, 0)
+        if (totalIn < totalOut) {
+          throw new Error('Transaction outputs exceed inputs')
+        }
+
+        // verify all input signatures
+        for (let i = 0; i < incomingTx.inputs.length; i++) {
+          const input = incomingTx.inputs[i]
+          if (!input.signed()) {
+            throw new Error('Transaction input not signed')
+          }
+          if (!Account.verifyTxIn(incomingTx, i, referencedUTxOuts[i]!.output.publicKey)) {
+            throw new Error('Transaction input signature invalid')
+          }
+        }
+
+        for (let existsTx of Object.values(this.transactionPool)) {
+          for (let input of existsTx.inputs) {
+            if (incomingTx.inputs.some(i => i.index === input.index && Buffer.from(i.txid).equals(Buffer.from(input.txid)))) {
+              throw new Error('Transaction input already in pool')
+            }
+          }
+        }
+
+        this.transactionPool[hex(incomingTx.id)] = incomingTx
+        validTxIds.add(hex(incomingTx.id))
+      } catch (e) {
+        console.error('Received invalid transaction from peer: ' + session.peer.address)
+        console.error(e)
+      }
+    }
+    if (validTxIds.size > 0) {
+      this.server.broadcast({ type: 'txinv', data: { txids: Array.from(validTxIds) } })
+    }
   }
 }
 

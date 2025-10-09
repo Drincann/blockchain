@@ -1,6 +1,7 @@
 export function padSuffix(bytes: Uint8Array, length: number): Uint8Array {
   if (bytes.length >= length) {
-    return bytes
+    // limit to length
+    return bytes.slice(0, length)
   }
 
   const padded = new Uint8Array(length)
@@ -8,9 +9,9 @@ export function padSuffix(bytes: Uint8Array, length: number): Uint8Array {
   return padded
 }
 
-export function removePadding(bytes: Uint8Array): Uint8Array {
+export function removeDERPadding(bytes: Uint8Array): Uint8Array {
   if (bytes[0] !== 0x30) {
-    throw new Error("Not a DER sequence");
+    return bytes;
   }
   const totalLen = bytes[1];
   const realLen = 2 + totalLen;
