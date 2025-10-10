@@ -7,8 +7,11 @@ if (genesisBlock.isProofValid()) {
 
 } else {
   const miner = genesisBlock.mine()
-  const resut = await miner;
+  const result = await miner;
+  if (result == null) {
+    throw new Error('genesis block mining cancelled')
+  }
   console.log(genesisBlock.isProofValid())
 
-  console.log(`genesis block mined: ${hex(resut.hash())}\n${JSON.stringify(resut.display(), null, 2)}`)
+  console.log(`genesis block mined: ${hex(result.hash())}\n${JSON.stringify(result.display(), null, 2)}`)
 }
