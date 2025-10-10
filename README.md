@@ -1,223 +1,72 @@
-# Simple Blockchain Implementation
+# Simple Blockchain
 
-A simple blockchain implementation in TypeScript with P2P networking and Proof-of-Work mining.
+This project is a tiny proof-of-work blockchain that you can run locally to see how mining, wallets, and peer-to-peer syncing work. It comes with a CLI so you can mine blocks, send coins, and watch the chain grow in real time.
 
-## Features
+> This repository is meant for learning: read through src/ to see how a full node is implemented in a compact and readable TypeScript codebase.
 
-- **Blockchain Core**: Complete block structure with serialization/deserialization
-- **P2P Networking**: WebSocket-based peer-to-peer communication, Automatic blockchain synchronization across peers
-- **Proof-of-Work Mining**: Simple mining algorithm with adjustable difficulty
-- **CLI Interface**: Interactive command-line interface for blockchain operations
+## Dependencies
 
-## Project Structure
+- [Node.js](https://nodejs.org/) v16+
+- [pnpm](https://pnpm.io/)
 
-```
-src/
-├── cli.mts                # Command-line interface
-├── block.mts              # Block implementation
-├── node.mts               # Blockchain node with P2P networking
-├── config.json            # Configuration file
-├── config.mts             # Configuration management
-├── lib
-│   ├── miner.mts          # Proof-of-Work mining implementation
-│   ├── queue.mts          # Synchronized queue for handling operations
-│   └── p2p                # P2P networking
-│       ├── index.mts
-│       ├── peer.mts
-│       ├── server.mts
-│       └── types.mts
-└── util
-    ├── crypto.mts        # Cryptographic utilities (SHA-256, hex encoding)
-    └── genesis-miner.mts # Genesis block miner
-```
+## Quick start
 
-## Build
+1. Install dependencies
 
-1. Clone the repository:
+   ```bash
+   pnpm install
+   ```
 
-```bash
-git clone https://github.com/Drincann/blockchain.git
-cd blockchain
-```
+2. **(Optional) Tell other nodes how to reach you**
+   Set `BLOCKCHAIN_SERVER_LISTEN_ADDRESS="host:port"` before starting if your node should advertise a public address.
 
-2. Install dependencies:
+3. Launch a node (default port is 3001)
 
-```bash
-pnpm install
-```
+   ```bash
+   pnpm start [port]
+   ```
 
-If you don't have pnpm, you can install it with:
+4. Use the interactive prompt that appears to control your node.
 
-```bash
-npm install -g pnpm
-```
+## Commands
 
-## Usage
+> required arguments: `<arg1>`; optional arguments: `[arg1]`
 
-### Starting a Node
+- `account` – show your node’s public & private keys plus current balance.
+- `balance [publicKeyHex]` – check your wallet or another wallet’s balance in sats.
+- `mine [text]` – mine a single block that includes the given text in the coinbase message.
+- `mineloop [text]` / `stoploop` – keep mining blocks until you stop the loop.
+- `send <toPublicKeyHex> <amount>` – create and broadcast a signed transaction from your wallet.
+- `peer add <host:port>` / `peer list` – connect to another node or list connected peers.
+- `block [hash]` – view the latest block or a specific block.
+- `blocktxs <hash>` – list the transactions inside a block.
+- `tx <txid>` – inspect a transaction (mempool or confirmed).
+- `unspent [publicKeyHex]` – see unspent outputs for a wallet.
+- `importprivatekey <hex>` – load an existing key pair.
+- `q` – quit the CLI.
 
-Start a blockchain node on a specific port (default: 3001):
+## What you get
+
+- Proof-of-work mining with automatic difficulty targets and a halving coinbase reward.
+- Peer-to-peer syncing over WebSockets so nodes exchange blocks and transactions.
+- Wallet with elliptic curve keys, UTXO tracking, and signed transactions.
+
+## Run a small network
+
+Open two terminals and start nodes on different ports, for example:
 
 ```bash
-pnpm start [port]
+pnpm start 3001
+pnpm start 3002
 ```
 
-### CLI Commands
-
-Once the node is running, you can use the following commands:
-
-#### Mining
-
-Mine a new block with the specified data (utf-8 encoded string).
+In one CLI, add the other as a peer:
 
 ```bash
-mine <data>
+peer add localhost:3002
 ```
 
-Start mining loop.
-
-```bash
-mineloop <data>
-```
-
-Stop mining loop.
-
-```bash
-stoploop
-```
-
-#### Peer Management
-
-```bash
-peer add <address>     # Add a new peer (e.g., "localhost:3002")
-peer list             # List all connected peers
-```
-
-#### Block Operations
-
-```bash
-block current         # Show current block information
-block <hash>          # Show specific block by hash
-```
-
-#### Quit
-
-```bash
-q                     # Exit the CLI
-```
-
-### Example Session
-
-```bash
-$ pnpm start 3001
-Node started on port 3001
-
-Simple Blockchain CLI
-Enter "q" to quit
-
-> block current
-block: 6038f6308a3437930d464efa8090837b8bc2710196e05d373fcb741cdc0a7534
-{
-  "height": 0,
-  "ts": 1749376247272,
-  "prev": "0000000000000000000000000000000000000000000000000000000000000000",
-  "difficulty": 1,
-  "nonce": "125c95cf5a41e63f6c1400cf6bbc14bc376bde4b8ac4e7fa3f071b7f0f7a592e",
-  "dataHex": "5468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73",
-  "dataUtf8": "The Times 03/Jan/2009 Chancellor on brink of second bailout for banks"
-}
-
-> mine HelloWorld
-new block: fe8bef47d4621151e9acd433cac054a11c6c26b8d44842c9b3fb625bb9d75b97
-{
-  "height": 1,
-  "ts": 1758100640612,
-  "prev": "6038f6308a3437930d464efa8090837b8bc2710196e05d373fcb741cdc0a7534",
-  "difficulty": 2,
-  "nonce": "0000000000000000000000000000000000000000000000000000000000000000",
-  "dataHex": "48656c6c6f576f726c64",
-  "dataUtf8": "HelloWorld"
-}
-
-> peer add localhost:3002
-added peer: localhost:3002
-
-> peer list
-peers: localhost:3002
-
-> block current
-block: 02546d1e58257eccf3141ac6d0bafcda02925b7554a2c2715cbb6875e3271fce
-{
-  "height": 1,
-  "ts": 1758100640612,
-  "prev": "6038f6308a3437930d464efa8090837b8bc2710196e05d373fcb741cdc0a7534",
-  "difficulty": 2,
-  "nonce": "30d892692fe5d61e0acc821f1c9fef531ba6bd4ad05b5a7ec1f51fa486b53ee4",
-  "dataHex": "48656c6c6f576f726c64",
-  "dataUtf8": "HelloWorld"
-}
-```
-
-## Technical Details
-
-### Block Structure
-
-Each block contains:
-
-```ts
-interface BlockData {
-  height: number;
-  ts: number;
-  prev: Uint8Array;
-  difficulty: number;
-  nonce: Uint8Array;
-  data: Uint8Array;
-}
-```
-
-- **Height**: Block number in the chain
-- **Timestamp**: Unix timestamp of block creation
-- **Previous Hash**: SHA-256 hash of the previous block
-- **Difficulty**: Mining difficulty level (number of leading zeros in hash)
-- **Nonce**: Value used for mining (proof-of-work)
-- **Data**: Variable-length data payload (max 1024 bytes by default)
-
-### Serialization Format
-
-Blocks are serialized as:
-
-- Bytes 0-7: Height (64-bit big-endian integer)
-- Bytes 8-15: Timestamp (64-bit big-endian integer)
-- Bytes 16-47: Previous hash (32 bytes)
-- Bytes 48-48: Difficulty (1 byte)
-- Bytes 49-80: Nonce (32 bytes)
-- Bytes 81+: Data (variable length)
-
-### P2P Protocol
-
-The network uses WebSocket connections with JSON messages:
-
-```ts
-interface Message {
-  id?: number;
-  type: "inventory" | "getblock" | "getpeers" | "nodeinfo" | "response";
-  data: Record<string, any>;
-}
-```
-
-- **inventory**: Broadcast new block summaries
-- **getblock**: Request specific blocks by hash
-- **getpeers**: Request the list of connected peers
-- **nodeinfo**: Send information about the node on connection
-- **response**: Response to requests
-
-### Genesis Block
-
-The genesis block contains the famous Bitcoin genesis message:
-
-> "The Times 03/Jan/2009 Chancellor on brink of second bailout for banks"
-
-You can modify the genesis block data in `src/block.mts`, and run `npx tsx src/util/genesis-miner.mts` to mine a valid nonce.
+Both nodes will now share newly mined blocks and broadcast transactions to each other.
 
 ## Testing
 
@@ -225,21 +74,4 @@ Run the test suite:
 
 ```bash
 pnpm test
-```
-
-## Configuration
-
-Modify `src/config.json` to adjust blockchain parameters:
-
-```json
-{
-  "maxDataBytes": 1024, // max data bytes per block
-  "listenAddress": "x.x.x.x:yyyy" // Publicly reachable address, Used for peer discovery and should be reachable by other nodes
-}
-```
-
-**listenAddress**: You can also override it at runtime using the `BLOCKCHAIN_SERVER_LISTEN_ADDRESS` environment variable, for example:
-
-```bash
-BLOCKCHAIN_SERVER_LISTEN_ADDRESS="x.x.x.x:yyyy" pnpm start 3001
 ```
