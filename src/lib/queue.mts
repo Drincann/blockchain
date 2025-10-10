@@ -18,7 +18,7 @@ export class SyncronizedQueue {
       return result
     }
 
-    this.queue.push(() => promiseTask().then(() => { }, () => { }).finally(() => this.callNext()))
+    this.queue.push(() => promiseTask().finally(() => this.callNext()))
     if (this.queue.length === 1) {
       this.queue[0]?.()
     }

@@ -83,7 +83,7 @@ export class Block {
       coinbase: {
         reward: this.coinbase.outputValue,
         to: hex(this.coinbase.outputs[0].publicKey),
-        data: Buffer.from(removeSuffix0(this.coinbase.inputs[0].signature)).toString('utf8')
+        data: Buffer.from(removeSuffix0(this.coinbase.inputs[0].signature!)).toString('utf8')
       },
       txCount: this.transactions.length
     }
@@ -196,7 +196,7 @@ export class Block {
       return false
     }
 
-    if (this.isProofInvalid()) {
+    if (next.isProofInvalid()) {
       return false
     }
 
@@ -290,7 +290,7 @@ function byteseq(a?: Uint8Array, b?: Uint8Array) {
   return true;
 }
 
-function removeSuffix0(signature: Uint8Array<ArrayBufferLike> | undefined): any {
+function removeSuffix0(signature: Uint8Array): Uint8Array {
   if (!signature) {
     return signature;
   }
