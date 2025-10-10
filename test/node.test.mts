@@ -1,4 +1,4 @@
-import { describe, it, before, after, beforeEach, afterEach } from "node:test"
+import { describe, it, beforeEach, afterEach } from "node:test"
 import assert from 'node:assert/strict'
 import { Node } from '../src/node.mts'
 import { Block } from '../src/block.mts'
@@ -103,8 +103,8 @@ describe('Blockchain Node Sync Tests', () => {
       assert.equal(hex(nodeBLastBlock.hash()), hex(minedBlock.hash()), 'Node B\'s latest block should be the one mined by Node A')
 
       // Verify data content
-      const nodeBData = new TextDecoder().decode(nodeBLastBlock.data)
-      assert.equal(nodeBData, 'test block 1', 'Node B\'s synced block data should be correct')
+      const nodeBData = new TextDecoder().decode(nodeBLastBlock.coinbase.inputs[0].signature)
+      assert.equal(nodeBData, 'test block 1' + '\x00'.repeat(72 - 12), 'Node B\'s synced block data should be correct')
     })
   })
 
@@ -323,25 +323,7 @@ describe('Blockchain Node Sync Tests', () => {
       // Verify sync success
       assert.equal(getBlockchainLength(nodeB), 2)
       assert.equal(hex(nodeB.current.hash()), hex(emptyBlock.hash()))
-      assert.equal(nodeB.current.data.length, 0, 'Node B\'s synced block should have empty data')
-    })
-
-    it('should handle large block data', async () => {
-      // Create a large data block
-      const largeData = new Uint8Array(1000).fill(65) // 1000 'A's
-      const largeBlock = await nodeA.mineAsync(largeData)
-      console.log(`Node A mined large block: ${hex(largeBlock?.hash())}`)
-
-      // Node B connects to Node A
-      const connected = await nodeB.addPeer(`localhost:${portA}`)
-      assert.ok(connected)
-
-      await waitForSync(300)
-
-      // Verify sync success
-      assert.equal(getBlockchainLength(nodeB), 2)
-      assert.equal(hex(nodeB.current.hash()), hex(largeBlock?.hash()))
-      assert.equal(nodeB.current.data.length, 1000, 'Node B\'s synced block should have 1000 bytes of data')
+      assert.deepEqual(nodeB.current.coinbase.inputs[0].signature, new Uint8Array(72).fill(0), 'Node B\'s synced block should have empty data')
     })
   })
 })
