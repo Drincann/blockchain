@@ -1,5 +1,5 @@
 import { Account } from './lib/transaction/account.mts'
-import { Node } from './node.mts'
+import { Node } from './node/node.mts'
 import { hex, hexBytes } from './util/crypto.mts'
 
 const node = new Node()
@@ -98,8 +98,8 @@ while (true) {
     }
 
     try {
-      const tx = node.send(toPublicKey, amount)
-      write(`sent transaction: ${hex(tx.id)}\n`)
+      const txinfo = node.send(toPublicKey, amount)
+      write(`sent transaction: ${hex(txinfo.tx.id)}, fees: ${txinfo.fees} sats\n`)
     } catch (e: any) {
       write(`failed to send transaction: ${e.message}\n`)
     }

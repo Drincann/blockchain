@@ -127,6 +127,7 @@ class Output {
   }
 }
 export const TxOut = Output
+export type TxOut = Output
 
 
 /**
@@ -182,6 +183,10 @@ export class Transaction {
   public addOutput(output: Output): Transaction {
     this._outputs.push(output)
     return this
+  }
+
+  public bytesLength(): number {
+    return 8 + this._inputs.length * 108 + this._outputs.length * 73
   }
 
   public get id(): Uint8Array {
@@ -343,58 +348,3 @@ class UnspentTransactionOut {
 
 export const UTxOut = UnspentTransactionOut
 export type UTxOut = UnspentTransactionOut
-
-
-/**
- * A collection of unspent transaction outputs
- */
-export class UTxOuts {
-  private uTxOuts: Record<string, UTxOut> = {}
-
-  constructor(uTxOuts?: UTxOut[]) {
-    if (uTxOuts) {
-      for (const uTxOut of uTxOuts) {
-        this.uTxOuts[UTxOuts.id(uTxOut)] = uTxOut
-      }
-    }
-  }
-
-  public getBalance(publicKey: Uint8Array<ArrayBufferLike>): number {
-    return Object.values(this.uTxOuts)
-      .filter(uTxOut => Buffer.from(uTxOut.output.publicKey).equals(Buffer.from(publicKey)))
-      .map(uTxOut => uTxOut.output.amount)
-      .reduce((a, b) => a + b, 0)
-  }
-
-  public get(input: TxIn | UTxOut): UTxOut | undefined {
-    return this.uTxOuts[UTxOuts.id(input)]
-  }
-
-  public filter(predicate: (uTxOut: UTxOut) => boolean): UTxOut[] {
-    return Object.values(this.uTxOuts).filter(predicate)
-  }
-
-  public static accountFilter(accountPubKey: Uint8Array) {
-    return (uTxOut: UTxOut) => Buffer.from(uTxOut.output.publicKey).equals(Buffer.from(accountPubKey))
-  }
-
-  public add(uTxOut: UTxOut) {
-    this.uTxOuts[UTxOuts.id(uTxOut)] = uTxOut
-  }
-
-  public remove(input: TxIn | UTxOut) {
-    delete this.uTxOuts[UTxOuts.id(input)]
-  }
-
-  public toArray(): UTxOut[] {
-    return Object.values(this.uTxOuts)
-  }
-
-  public copy(): UTxOuts {
-    return new UTxOuts(this.toArray())
-  }
-
-  private static id(input: TxIn | UTxOut) {
-    return `${input.txid}:${input.index}`
-  }
-}

@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test"
 import assert from 'node:assert/strict'
-import { Node } from '../src/node.mts'
+import { Node } from '../src/node/node.mts'
 import { Block } from '../src/block.mts'
 import { hex } from '../src/util/crypto.mts'
 

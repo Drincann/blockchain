@@ -1,5 +1,5 @@
 import { bitString, hex, hexBytes, sha256 } from "./util/crypto.mts"
-import { config } from "./config.mts"
+import { MAX_BLOCK_TX_BYTES } from "./config.mts"
 import { BlockMiner } from "./lib/miner.mts"
 import { Transaction } from "./lib/transaction/transaction.mts"
 
@@ -200,7 +200,7 @@ export class Block {
       return false
     }
 
-    if (next.txs.length > config.maxDataBytes) {
+    if (next.txs.length > MAX_BLOCK_TX_BYTES) {
       return false
     }
 
@@ -221,12 +221,28 @@ export class Block {
     const newTxs = new Uint8Array(this.txs.length + newTx.length)
     newTxs.set(this.txs, 0)
     newTxs.set(newTx, this.txs.length)
-    if (newTxs.length > config.maxDataBytes) {
+    if (newTxs.length > MAX_BLOCK_TX_BYTES) {
       return false
     }
 
     this.block.txs = newTxs
     return true
+  }
+
+  public static selectTransactions(txs: Transaction[]): Transaction[] {
+    const selected: Transaction[] = []
+    let offset = 0
+
+    for (const tx of txs) {
+      const serialized = tx.serialize()
+      if (offset + serialized.length > MAX_BLOCK_TX_BYTES) {
+        break
+      }
+      offset += serialized.length
+      selected.push(tx)
+    }
+
+    return selected
   }
 
   public static deserialize(bytes: Uint8Array): Block {

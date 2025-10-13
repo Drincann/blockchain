@@ -1,18 +1,23 @@
-import { Block } from "./block.mts";
-import { Session, Server } from "./lib/p2p/index.mts";
-import { hex, hexBytes } from "./util/crypto.mts";
-import { SyncronizedQueue } from "./lib/queue.mts";
-import { BlockMiner } from "./lib/miner.mts";
-import { Transaction, UTxOut, TxIn, UTxOuts, TxOut } from "./lib/transaction/transaction.mts";
-import { Account } from "./lib/transaction/account.mts";
+import { Block } from "../block.mts";
+import { Session, Server } from "../lib/p2p/index.mts";
+import { hex, hexBytes } from "../util/crypto.mts";
+import { SyncronizedQueue } from "../lib/queue.mts";
+import { BlockMiner } from "../lib/miner.mts";
+import { Transaction, UTxOut, TxIn, TxOut } from "../lib/transaction/transaction.mts";
+import { UTxOuts } from "./utxouts.mts";
 
+import { Account } from "../lib/transaction/account.mts";
 
-const COINBASE_REWARD = 5_000_000_000
-const REWARD_HALVING_EVERY_BLOCKS = 210_000
-const BLOCK_GENERATION_TARGET_IN_MILLS = 10_000 // 10 seconds
-const DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS = 10
-const MEDIAN_TIME_PAST_WINDOW = 11
-const MAX_FUTURE_DRIFT_IN_MILLS = 1000 * 60 * 2 // 2 minutes
+import {
+  COINBASE_REWARD,
+  REWARD_HALVING_EVERY_BLOCKS,
+  BLOCK_GENERATION_TARGET_IN_MILLS,
+  DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS,
+  MEDIAN_TIME_PAST_WINDOW,
+  MAX_FUTURE_DRIFT_IN_MILLS,
+  MIN_TX_FEES_EVERY_BYTE
+} from "../config.mts";
+import { TransactionPool } from "./txpool.mts";
 
 /**
  * A full node in the blockchain network
@@ -25,7 +30,7 @@ export class Node {
   private mining: BlockMiner | null = null
   private _account: Account = new Account()
 
-  private transactionPool: Record<string, Transaction> = {}
+  private transactionPool: TransactionPool = new TransactionPool()
   private uTxOuts: UTxOuts = new UTxOuts()
 
   public constructor() { }
@@ -68,8 +73,8 @@ export class Node {
       }
     }
 
-    if (this.transactionPool[id]) {
-      return { tx: this.transactionPool[id] }
+    if (this.transactionPool.has(id)) {
+      return { tx: this.transactionPool.get(id)!.tx }
     }
 
     return undefined
@@ -85,7 +90,7 @@ export class Node {
       .on('gettx', this.getTxs.bind(this))
       .onConnect(peer => {
         peer.send('blockinv', this.tip.summary)
-        peer.send('txinv', { txids: Object.keys(this.transactionPool) })
+        peer.send('txinv', { txids: this.transactionPool.keys() })
       })
 
     console.log(`Node started on port ${port}`)
@@ -117,39 +122,92 @@ export class Node {
     return this.mining
   }
 
-  public send(to: Uint8Array, amount: number): Transaction {
-    const uTxOuts: UTxOut[] = this.uTxOuts.filter(UTxOuts.accountFilter(this.account.publicKey)).sort((a, b) => (a.output.amount || 0) - (b.output.amount || 0))
+  public send(to: Uint8Array, amount: number): { tx: Transaction, fees: number } {
+    const uTxOuts: UTxOut[] =
+      this.uTxOuts
+        .filter(UTxOuts.accountFilter(this.account.publicKey))
+        .filter(UTxOuts.excludePendingTxIns(this.transactionPool))
+        .sort((a, b) => (a.output.amount || 0) - (b.output.amount || 0))
+
     const total = uTxOuts.reduce((sum, uTxOut) => sum + (uTxOut.output.amount || 0), 0)
     if (total < amount) {
       throw new Error('Insufficient balance')
     }
 
     const willSpend: UTxOut[] = []
-    let accumulated = 0
+    let inputValue = 0
     for (const uTxOut of uTxOuts) {
       willSpend.push(uTxOut)
-      accumulated += (uTxOut.output.amount || 0)
-      if (accumulated >= amount) {
+      inputValue += (uTxOut.output.amount || 0)
+      if (inputValue >= amount) {
         break
       }
     }
+    const unspent = uTxOuts.filter(uTxOut => !willSpend.includes(uTxOut))
 
     const tx = new Transaction()
     for (const uTxOut of willSpend) {
       tx.addInput(new TxIn(uTxOut.txid, uTxOut.index))
     }
     tx.addOutput(new TxOut(amount, to))
-    if (accumulated > amount) {
-      tx.addOutput(new TxOut(accumulated - amount, this.account.publicKey))
+
+    // change
+    let changeOutput: TxOut | null = null
+    if (inputValue > amount) {
+      changeOutput = new TxOut(inputValue - amount, this.account.publicKey)
+      tx.addOutput(changeOutput)
     }
+
+    const fees = tx.bytesLength() * MIN_TX_FEES_EVERY_BYTE
+    if (total < amount + fees) {
+      throw new Error(`Insufficient balance to cover transaction fees, need at least ${fees} sats more`)
+    }
+
+    if (!this.trySetFees(tx, changeOutput)) {
+      if (!changeOutput) {
+        changeOutput = new TxOut(0, this.account.publicKey)
+        tx.addOutput(changeOutput)
+      }
+
+      while (!this.trySetFees(tx, changeOutput)) {
+        const utxo = unspent.shift()
+        if (utxo == null) {
+          throw new Error('Insufficient balance to cover transaction fees')
+        }
+
+        tx.addInput(new TxIn(utxo.txid, utxo.index))
+        changeOutput.amount += utxo.output.amount
+      }
+    }
+
+    // sign all inputs
     for (let i = 0; i < tx.inputs.length; i++) {
       this.account.signTxIn(tx, i)
     }
 
-    this.transactionPool[hex(tx.id)] = tx
+    this.transactionPool.add({ tx, fees: this.getTxInAmount(tx) - tx.outputValue })
     this.server.broadcast({ type: 'txinv', data: { txids: [hex(tx.id)] } })
 
-    return tx
+    return { tx, fees }
+  }
+
+  private trySetFees(tx: Transaction, changeOutput: TxOut | null): boolean {
+    const totalIn = this.getTxInAmount(tx)
+    const totalOut = tx.outputValue
+    const minFees = tx.bytesLength() * MIN_TX_FEES_EVERY_BYTE
+    if (totalIn === totalOut + minFees) {
+      return true
+    }
+    if (!changeOutput) {
+      return false
+    }
+
+    if (changeOutput.amount < minFees) {
+      return false
+    }
+
+    changeOutput.amount -= minFees
+    return true
   }
 
   public getBalance(pubkey?: Uint8Array): number {
@@ -162,9 +220,13 @@ export class Node {
 
   private generateBlock(data?: Uint8Array): Block {
     const block = this.tip.generate({ difficulty: this.getCurrentDifficulty() })
+    const orderedTxs = this.transactionPool.orderByFeesDesc()
+    const selectedTxs: Transaction[] = Block.selectTransactions(orderedTxs.map(pendingTx => pendingTx.tx)).slice(0, -1) // leave room for coinbase
+    const txFees = this.calculateTotalFees(selectedTxs)
+
     const coinbase = Transaction.buildCoinbaseTx(
       this.account.publicKey,
-      this.getCoinbaseRewardAtHeight(block.height), // fees will be added later
+      this.getCoinbaseRewardAtHeight(block.height) + txFees,
       block.height,
       data
     )
@@ -172,20 +234,16 @@ export class Node {
       throw new Error('Failed to add coinbase transaction to the new block, data size may exceed the limit')
     }
 
-    const txs: Transaction[] = []
-    for (const tx of Object.values(this.transactionPool)) {
+    for (const tx of selectedTxs) {
       if (!block.addTransaction(tx)) { // block is full
         break
       }
-
-      txs.push(tx)
     }
-    coinbase.outputs[0].amount += this.calculateTotalFees(this.transactionPool)
     return block
   }
 
-  private calculateTotalFees(transactionPool: Record<string, Transaction>): number {
-    return Object.values(transactionPool).reduce((total, tx) => total + this.getTxInAmount(tx) - tx.outputValue, 0)
+  private calculateTotalFees(transactionPool: Transaction[]): number {
+    return transactionPool.reduce((total, tx) => total + this.getTxInAmount(tx) - tx.outputValue, 0)
   }
 
   private getTxInAmount(tx: Transaction) {
@@ -526,10 +584,10 @@ export class Node {
     this.uTxOuts = uTxOuts
 
     // update transaction pool
-    for (let existsTx of Object.values(this.transactionPool)) {
-      for (let input of existsTx.inputs) {
+    for (let pendingTx of this.transactionPool.getAll()) {
+      for (let input of pendingTx.tx.inputs) {
         if (this.uTxOuts.get(input) === undefined) {
-          delete this.transactionPool[hex(existsTx.id)]
+          this.transactionPool.remove(hex(pendingTx.tx.id))
           break
         }
       }
@@ -606,11 +664,11 @@ export class Node {
   private async getTxs(session: Session): Promise<void> {
     const txids = session.data?.txids
     if (!Array.isArray(txids)) {
-      session.respond({ txs: Object.values(this.transactionPool).map(tx => tx.serialize()) })
+      session.respond({ txs: this.transactionPool.getAll().map(pendingTx => pendingTx.tx.serialize()) })
       return
     }
 
-    session.respond({ txs: txids.filter(txid => this.transactionPool[txid]).map(txid => hex(this.transactionPool[txid].serialize())) })
+    session.respond({ txs: txids.filter(txid => this.transactionPool.has(txid)).map(txid => hex(this.transactionPool.get(txid)!.tx.serialize())) })
   }
 
   private async onNewTxs(session: Session): Promise<void> {
@@ -619,7 +677,7 @@ export class Node {
       return
     }
 
-    const unknownTxids = txids.filter(txid => !this.transactionPool[txid])
+    const unknownTxids = txids.filter(txid => !this.transactionPool.has(txid))
     if (unknownTxids.length === 0) {
       return
     }
@@ -646,6 +704,12 @@ export class Node {
         if (totalIn < totalOut) {
           throw new Error('Transaction outputs exceed inputs')
         }
+        // transaction fees validation
+        const txBytes = incomingTx.serialize().length
+        const minFees = txBytes * MIN_TX_FEES_EVERY_BYTE
+        if (totalIn - totalOut < minFees) {
+          throw new Error('Transaction fees too low')
+        }
 
         // verify all input signatures
         for (let i = 0; i < incomingTx.inputs.length; i++) {
@@ -658,15 +722,16 @@ export class Node {
           }
         }
 
-        for (let existsTx of Object.values(this.transactionPool)) {
-          for (let input of existsTx.inputs) {
+        for (let pendingTx of this.transactionPool.getAll()) {
+          for (let input of pendingTx.tx.inputs) {
             if (incomingTx.inputs.some(i => i.index === input.index && Buffer.from(i.txid).equals(Buffer.from(input.txid)))) {
               throw new Error('Transaction input already in pool')
             }
           }
         }
 
-        this.transactionPool[hex(incomingTx.id)] = incomingTx
+
+        this.transactionPool.add({ tx: incomingTx, fees: totalIn - totalOut })
         validTxIds.add(hex(incomingTx.id))
       } catch (e) {
         console.error('Received invalid transaction from peer: ' + session.peer.address)
