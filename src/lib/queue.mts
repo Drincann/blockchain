@@ -20,7 +20,7 @@ export class SyncronizedQueue {
 
     this.queue.push(() => promiseTask().finally(() => this.callNext()))
     if (this.queue.length === 1) {
-      this.queue[0]?.()
+      this.queue[0]?.().catch(() => { })
     }
 
     return promise
@@ -29,7 +29,7 @@ export class SyncronizedQueue {
   private callNext() {
     this.queue.shift()
     if (this.queue.length > 0) {
-      this.queue[0]?.()
+      this.queue[0]?.().catch(() => { })
     }
   }
 }
