@@ -14,10 +14,6 @@ export const MAX_FUTURE_DRIFT_IN_MILLS = 1000 * 60 * 2 // 2 minutes
 export const MIN_TX_FEES_EVERY_BYTE = 1 // 1 satoshi per byte
 
 export const config = {
-  get maxDataBytes(): number {
-    return 10240
-  },
-
   get listenAddress(): string | undefined {
     return process.env.BLOCKCHAIN_SERVER_LISTEN_ADDRESS ?? jsonConfig.listenAddress ?? undefined
   }
