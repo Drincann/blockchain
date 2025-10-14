@@ -558,6 +558,13 @@ export class Node {
           }
         }
 
+        // verify transaction fees
+        const txBytes = tx.bytesLength()
+        const minFees = txBytes * MIN_TX_FEES_EVERY_BYTE
+        if (totalIn - totalOut < minFees) {
+          throw new Error('Transaction fees too low')
+        }
+
         // update UTxOuts
         referencedUTxOuts.forEach(uTxOut => uTxOuts.remove(uTxOut!))
         UTxOut.fromTransaction(block.hash(), tx).forEach(uTxOut => uTxOuts.add(uTxOut))
