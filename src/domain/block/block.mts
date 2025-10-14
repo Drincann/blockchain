@@ -1,7 +1,7 @@
-import { bitString, hex, hexBytes, sha256 } from "./util/crypto.mts"
-import { MAX_BLOCK_TX_BYTES } from "./config.mts"
-import { BlockMiner } from "./lib/miner.mts"
-import { Transaction } from "./lib/transaction/transaction.mts"
+import { bitString, hex, hexBytes, sha256 } from "../../util/crypto.mts"
+import { MAX_BLOCK_TX_BYTES } from "../../app/config.mts"
+import { BlockMiner } from "../../infra/miner/miner.mts"
+import { Transaction } from "../transaction/transaction.mts"
 
 export type Hash = Uint8Array
 

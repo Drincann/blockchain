@@ -1,4 +1,4 @@
-import { Block } from "../block.mts";
+import { Block } from "../domain/block/block.mts";
 import { hex } from "./crypto.mts";
 
 const genesisBlock = Block.deserialize(Block.GENESIS_BLOCK);

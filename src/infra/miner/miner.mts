@@ -1,5 +1,5 @@
 import { randomBytes } from "crypto";
-import { Block } from "../block.mts";
+import { Block } from "../domain/block/block.mts";
 
 export class BlockMiner {
 

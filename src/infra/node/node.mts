@@ -1,12 +1,14 @@
-import { Block } from "../block.mts";
-import { Session, Server } from "../lib/p2p/index.mts";
-import { hex, hexBytes } from "../util/crypto.mts";
-import { SyncronizedQueue } from "../lib/queue.mts";
-import { BlockMiner } from "../lib/miner.mts";
-import { Transaction, UTxOut, TxIn, TxOut } from "../lib/transaction/transaction.mts";
-import { UTxOuts } from "./utxouts.mts";
+import { Block } from "../../domain/block/block.mts";
+import { Session } from "../p2p/peer.mts";
+import { Server } from "../p2p/server.mts";
+import { hex, hexBytes } from "../../util/crypto.mts";
+import { SyncronizedQueue } from "../../util/async/queue.mts";
+import { BlockMiner } from "../miner/miner.mts";
+import { Transaction, TxIn, TxOut } from "../../domain/transaction/transaction.mts";
+import { UTxOut } from "../../domain/transaction/utxo.mts";
+import { UTxOutSet } from "../../domain/transaction/utxo.mts";
 
-import { Account } from "../lib/transaction/account.mts";
+import { Account } from "../../domain/transaction/account.mts";
 
 import {
   COINBASE_REWARD,
@@ -16,7 +18,7 @@ import {
   MEDIAN_TIME_PAST_WINDOW,
   MAX_FUTURE_DRIFT_IN_MILLS,
   MIN_TX_FEES_EVERY_BYTE
-} from "../config.mts";
+} from "../../app/config.mts";
 import { TransactionPool } from "./txpool.mts";
 
 /**
@@ -31,7 +33,7 @@ export class Node {
   private _account: Account = new Account()
 
   private transactionPool: TransactionPool = new TransactionPool()
-  private uTxOuts: UTxOuts = new UTxOuts()
+  private uTxOuts: UTxOutSet = new UTxOutSet()
 
   public constructor() { }
 
@@ -115,18 +117,18 @@ export class Node {
     const newBlock = this.generateBlock(data)
     this.mining = newBlock.mine()
 
-    this.mining.then(minedBlock => {
+    this.mining?.then(minedBlock => {
       this.tryAccept(minedBlock)
     })
 
-    return this.mining
+    return this.mining!
   }
 
   public send(to: Uint8Array, amount: number): { tx: Transaction, fees: number } {
     const uTxOuts: UTxOut[] =
       this.uTxOuts
-        .filter(UTxOuts.accountFilter(this.account.publicKey))
-        .filter(UTxOuts.excludePendingTxIns(this.transactionPool))
+        .filter(UTxOutSet.accountFilter(this.account.publicKey))
+        .filter(UTxOutSet.excludePendingTxIns(this.transactionPool))
         .sort((a, b) => (a.output.amount || 0) - (b.output.amount || 0))
 
     const total = uTxOuts.reduce((sum, uTxOut) => sum + (uTxOut.output.amount || 0), 0)
@@ -215,7 +217,7 @@ export class Node {
   }
 
   public getUnspentOutputs(pubkey?: Uint8Array): UTxOut[] {
-    return this.uTxOuts.filter(UTxOuts.accountFilter(pubkey || this.account.publicKey))
+    return this.uTxOuts.filter(UTxOutSet.accountFilter(pubkey || this.account.publicKey))
   }
 
   private generateBlock(data?: Uint8Array): Block {
@@ -490,7 +492,7 @@ export class Node {
     throw new Error('Incoming chain has insufficient cumulative difficulty')
   }
 
-  private validateNewBlocksAndUpdateUTxOuts(blocks: Record<string, Block>, start: Block, tip: Block, uTxOutsState?: UTxOuts) {
+  private validateNewBlocksAndUpdateUTxOuts(blocks: Record<string, Block>, start: Block, tip: Block, uTxOutsState?: UTxOutSet) {
     if (tip.ts >= Date.now() + MAX_FUTURE_DRIFT_IN_MILLS) {
       throw new Error('Block timestamp too far in the future')
     }
@@ -518,7 +520,7 @@ export class Node {
     }
 
     // utxos copy
-    const uTxOuts: UTxOuts = (uTxOutsState ?? this.uTxOuts).copy()
+    const uTxOuts: UTxOutSet = (uTxOutsState ?? this.uTxOuts).copy()
 
     // validate blocks
     for (let block: Block | null = start; block != null; block = block.next) {
@@ -625,7 +627,7 @@ export class Node {
     }
 
     // validate new blocks and update UTxOuts
-    this.validateNewBlocksAndUpdateUTxOuts(blocks, start, tip, new UTxOuts(Object.values(uTxOuts)))
+    this.validateNewBlocksAndUpdateUTxOuts(blocks, start, tip, new UTxOutSet(Object.values(uTxOuts)))
   }
 
   private async getBlock(session: Session): Promise<void> {

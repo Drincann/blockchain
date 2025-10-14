@@ -1,8 +1,8 @@
 import { describe, it } from "node:test"
 import assert from 'node:assert/strict'
-import { Account } from "../src/lib/transaction/account.mts"
+import { Account } from "../src/domain/transaction/account.mts"
 import { hex, hexBytes } from "../src/util/crypto.mts"
-import { TxIn, TxOut, Transaction } from "../src/lib/transaction/transaction.mts"
+import { TxIn, TxOut, Transaction } from "../src/domain/transaction/transaction.mts"
 
 describe('Transaction', () => {
   describe('Input', () => {

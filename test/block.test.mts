@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from 'node:assert/strict'
-import { Block } from '../src/block.mts'
+import { Block } from "../src/domain/block/block.mts"
 import { hex } from "../src/util/crypto.mts"
 
 describe('Block', () => {
