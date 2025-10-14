@@ -1,5 +1,6 @@
-import { Transaction, UTxOut } from "../lib/transaction/transaction.mts"
-import { hex } from "../util/crypto.mts"
+import { Transaction } from "../../domain/transaction/transaction.mts"
+import { UTxOut } from "../../domain/transaction/utxo.mts"
+import { hex } from "../../util/crypto.mts"
 
 export interface PendingTransaction {
   tx: Transaction

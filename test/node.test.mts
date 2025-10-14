@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test"
 import assert from 'node:assert/strict'
-import { Node } from '../src/node/node.mts'
-import { Block } from '../src/block.mts'
+import { Node } from '../src/infra/node/node.mts'
+import { Block } from '../src/domain/block/block.mts'
 import { hex } from '../src/util/crypto.mts'
 
 function createTestNode(port: number): Node {

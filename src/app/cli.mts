@@ -1,6 +1,6 @@
-import { Account } from './lib/transaction/account.mts'
-import { Node } from './node/node.mts'
-import { hex, hexBytes } from './util/crypto.mts'
+import { Account } from '../domain/transaction/account.mts'
+import { Node } from '../infra/node/node.mts'
+import { hex, hexBytes } from '../util/crypto.mts'
 
 const node = new Node()
 node.start(parseInt(process.argv[2] || '3001'))

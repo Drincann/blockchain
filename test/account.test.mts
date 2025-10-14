@@ -1,8 +1,8 @@
 import { describe, it } from "node:test"
 import assert from 'node:assert/strict'
-import { Account } from "../src/lib/transaction/account.mts"
+import { Account } from "../src/domain/transaction/account.mts"
 import { hex } from "../src/util/crypto.mts"
-import { Transaction, TxOut, TxIn } from "../src/lib/transaction/transaction.mts"
+import { Transaction, TxOut, TxIn } from "../src/domain/transaction/transaction.mts"
 
 describe('Account', () => {
   it('account gen', () => {

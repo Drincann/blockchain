@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws"
 import { Peer, Session } from "./peer.mts"
 import { Message, MessageType } from "./types.mts"
-import { config } from "../../config.mts"
+import { config } from "../../app/config.mts"
 import { uuid } from "../../util/crypto.mts"
 
 export class Server {
