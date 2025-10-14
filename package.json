@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "test": "tsx --test test/*",
-    "start": "tsx src/cli.mts",
+    "start": "tsx src/app/cli.mts",
     "build": "tsc"
   },
   "type": "module",
