@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { Node } from '../src/infra/node/node.mts'
 import { Block } from '../src/domain/block/block.mts'
 import { hex } from '../src/util/crypto.mts'
+import { Account } from "../src/domain/transaction/account.mts"
+import { Transaction, TxIn, TxOut } from "../src/domain/transaction/transaction.mts"
 
 function createTestNode(port: number): Node {
   const node = new Node()
@@ -324,6 +326,28 @@ describe('Blockchain Node Sync Tests', () => {
       assert.equal(getBlockchainLength(nodeB), 2)
       assert.equal(hex(nodeB.current.hash()), hex(emptyBlock.hash()))
       assert.deepEqual(nodeB.current.coinbase.inputs[0].signature, new Uint8Array(72).fill(0), 'Node B\'s synced block should have empty data')
+    })
+  })
+
+  describe('Transaction validation tests', () => {
+    it('double spending prevention', async () => {
+      const sender = new Account()
+      const receiver = new Account()
+
+      nodeA.importAccount(sender)
+
+      await mine(nodeA, 'initial block to fund sender')
+
+      nodeA.send(receiver.publicKey, 40_000_000)
+      // should throw error
+      assert.throws(() => {
+        nodeA.send(receiver.publicKey, 40_000_000)
+      }, /Insufficient balance/)
+
+      await nodeA.mineAsync()
+
+      const receiverBalance = nodeA.getBalance(receiver.publicKey)
+      assert.equal(receiverBalance, 40_000_000, 'Receiver should have received 40_000_000 sats')
     })
   })
 })

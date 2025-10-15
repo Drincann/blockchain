@@ -229,13 +229,15 @@ export class Block {
     return true
   }
 
-  public static selectTransactions(txs: Transaction[]): Transaction[] {
+  public static selectTransactions(txs: Transaction[], reserved: number): Transaction[] {
     const selected: Transaction[] = []
-    let offset = 0
+    let offset = reserved
 
+    let full = false
     for (const tx of txs) {
       const serialized = tx.serialize()
-      if (offset + serialized.length > MAX_BLOCK_TX_BYTES) {
+      if (offset + serialized.length >= MAX_BLOCK_TX_BYTES) {
+        full = true
         break
       }
       offset += serialized.length

@@ -223,22 +223,25 @@ export class Node {
   private generateBlock(data?: Uint8Array): Block {
     const block = this.tip.generate({ difficulty: this.getCurrentDifficulty() })
     const orderedTxs = this.transactionPool.orderByFeesDesc()
-    const selectedTxs: Transaction[] = Block.selectTransactions(orderedTxs.map(pendingTx => pendingTx.tx)).slice(0, -1) // leave room for coinbase
-    const txFees = this.calculateTotalFees(selectedTxs)
-
     const coinbase = Transaction.buildCoinbaseTx(
       this.account.publicKey,
-      this.getCoinbaseRewardAtHeight(block.height) + txFees,
+      0,
       block.height,
       data
     )
+
+    // select transactions & calculate coinbase reward
+    const selectedTxs = Block.selectTransactions(orderedTxs.map(pendingTx => pendingTx.tx), coinbase.bytesLength())
+    const txFees = this.calculateTotalFees(selectedTxs)
+    coinbase.outputs[0].amount = this.getCoinbaseRewardAtHeight(block.height) + txFees
+
+    // add transactions
     if (!block.addTransaction(coinbase)) {
       throw new Error('Failed to add coinbase transaction to the new block, data size may exceed the limit')
     }
-
     for (const tx of selectedTxs) {
-      if (!block.addTransaction(tx)) { // block is full
-        break
+      if (!block.addTransaction(tx)) {
+        throw new Error('Failed to add transaction to the new block, data size may exceed the limit')
       }
     }
     return block
