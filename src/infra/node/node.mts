@@ -734,14 +734,10 @@ export class Node {
           }
         }
 
-        for (let pendingTx of this.transactionPool.getAll()) {
-          for (let input of pendingTx.tx.inputs) {
-            if (incomingTx.inputs.some(i => i.index === input.index && Buffer.from(i.txid).equals(Buffer.from(input.txid)))) {
-              throw new Error('Transaction input already in pool')
-            }
-          }
+        // check if any input is already in the transaction pool
+        if (incomingTx.inputs.some(input => this.transactionPool.has(this.uTxOuts.get(input)!))) {
+          throw new Error('Transaction input already in pool')
         }
-
 
         this.transactionPool.add({ tx: incomingTx, fees: totalIn - totalOut })
         validTxIds.add(hex(incomingTx.id))

@@ -349,5 +349,157 @@ describe('Blockchain Node Sync Tests', () => {
       const receiverBalance = nodeA.getBalance(receiver.publicKey)
       assert.equal(receiverBalance, 40_000_000, 'Receiver should have received 40_000_000 sats')
     })
+
+    it('should reject double spending transaction in pool', async () => {
+      const sender = new Account()
+      const receiver1 = new Account()
+      const receiver2 = new Account()
+
+      // import sender account to nodeA
+      nodeA.importAccount(sender)
+
+      // mine a block to fund sender
+      await mine(nodeA, 'initial block to fund sender')
+
+      // get available UTXOs
+      const availableUTxOs = nodeA['uTxOuts']['filter'](
+        (utxo: any) => Buffer.from(utxo.output.publicKey).equals(Buffer.from(sender.publicKey))
+      )
+      assert.ok(availableUTxOs.length > 0, 'Should have available UTXOs')
+
+      const utxoToSpend = availableUTxOs[0]
+
+      // create first transaction
+      const tx1 = new Transaction()
+      const input1 = new TxIn(utxoToSpend.txid, utxoToSpend.index)
+      tx1.addInput(input1)
+      tx1.addOutput(new TxOut(30_000_000, receiver1.publicKey))
+      tx1.addOutput(new TxOut(utxoToSpend.output.amount - 30_000_000 - 100_000, sender.publicKey)) // 找零
+
+      // sign first transaction
+      sender.signTxIn(tx1, 0)
+
+      // add first transaction to transaction pool
+      nodeA['transactionPool'].add({
+        tx: tx1,
+        fees: 100_000
+      })
+
+      // create second transaction, try to double spend using the same UTXO
+      const tx2 = new Transaction()
+      const input2 = new TxIn(utxoToSpend.txid, utxoToSpend.index)
+      tx2.addInput(input2)
+      tx2.addOutput(new TxOut(25_000_000, receiver2.publicKey))
+      tx2.addOutput(new TxOut(utxoToSpend.output.amount - 25_000_000 - 100_000, sender.publicKey)) // change
+
+      // sign second transaction
+      sender.signTxIn(tx2, 0)
+
+      // try to add second transaction to transaction pool (should be detected as double spending)
+      const isDoubleSpend = tx2.inputs.some(input => {
+        const inputUtxo = nodeA['uTxOuts'].get(input)
+        return nodeA['transactionPool'].has(inputUtxo!)
+      })
+
+      assert.ok(isDoubleSpend, 'Should detect double spending attempt in transaction pool')
+
+      // verify only first transaction is in pool
+      assert.ok(nodeA['transactionPool'].has(hex(tx1.id)), 'First transaction should be in pool')
+
+      // mine to confirm first transaction
+      await nodeA.mineAsync()
+
+      // verify only first receiver received funds
+      const receiver1Balance = nodeA.getBalance(receiver1.publicKey)
+      const receiver2Balance = nodeA.getBalance(receiver2.publicKey)
+      assert.equal(receiver1Balance, 30_000_000, 'Receiver1 should have received 30_000_000 sats')
+      assert.equal(receiver2Balance, 0, 'Receiver2 should not have received any funds')
+    })
+
+    it('should prevent double spending when receiving external transactions', async () => {
+      const sender = new Account()
+      const receiver1 = new Account()
+      const receiver2 = new Account()
+
+      // import sender account to nodeA
+      nodeA.importAccount(sender)
+
+      // mine a block to fund sender
+      await mine(nodeA, 'initial block to fund sender')
+
+      // connect two nodes
+      const connected = await nodeA.addPeer(`localhost:${portB}`)
+      assert.ok(connected, 'Node A should successfully connect to Node B')
+
+      await waitForSync(300)
+
+      // verify nodeB has synced the initial block
+      assert.equal(getBlockchainLength(nodeB), 2, 'Node B should have synced the initial block')
+
+      // get available UTXOs
+      const availableUTxOs = nodeA['uTxOuts']['filter'](
+        (utxo: any) => Buffer.from(utxo.output.publicKey).equals(Buffer.from(sender.publicKey))
+      )
+      assert.ok(availableUTxOs.length > 0, 'Should have available UTXOs')
+
+      const utxoToSpend = availableUTxOs[0]
+
+      // create first transaction
+      const tx1 = new Transaction()
+      tx1.addInput(new TxIn(utxoToSpend.txid, utxoToSpend.index))
+      tx1.addOutput(new TxOut(30_000_000, receiver1.publicKey))
+      tx1.addOutput(new TxOut(utxoToSpend.output.amount - 30_000_000 - 100_000, sender.publicKey))
+      sender.signTxIn(tx1, 0)
+
+      // add first transaction to transaction pool and broadcast
+      nodeA['transactionPool'].add({ tx: tx1, fees: 100_000 })
+      nodeA['server'].broadcast({ type: 'txinv', data: { txids: [hex(tx1.id)] } })
+
+      await waitForSync(500)
+
+      // verify nodeB has received first transaction
+      assert.ok(nodeB['transactionPool'].has(hex(tx1.id)), 'Node B should have received tx1')
+
+      // create second transaction, try to double spend using the same UTXO
+      const tx2 = new Transaction()
+      tx2.addInput(new TxIn(utxoToSpend.txid, utxoToSpend.index))
+      tx2.addOutput(new TxOut(25_000_000, receiver2.publicKey))
+      tx2.addOutput(new TxOut(utxoToSpend.output.amount - 25_000_000 - 100_000, sender.publicKey))
+      sender.signTxIn(tx2, 0)
+
+      // simulate nodeB receiving double spending transaction
+      const mockSession = {
+        peer: { address: 'test-peer' },
+        data: { txids: [hex(tx2.id)] },
+        request: async (type: string, data: any) => {
+          if (type === 'gettx') {
+            return { txs: [hex(tx2.serialize())] }
+          }
+          return null
+        }
+      }
+
+      // call onNewTxs method, should reject double spending transaction
+      await nodeB['onNewTxs'](mockSession as any)
+
+      // verify double spending transaction is rejected
+      assert.ok(!nodeB['transactionPool'].has(hex(tx2.id)), 'Node B should reject tx2 (double spending)')
+
+      // mine to confirm first transaction
+      await nodeA.mineAsync()
+
+      await waitForSync(300)
+
+      // verify only first receiver received funds
+      const receiver1BalanceA = nodeA.getBalance(receiver1.publicKey)
+      const receiver2BalanceA = nodeA.getBalance(receiver2.publicKey)
+      const receiver1BalanceB = nodeB.getBalance(receiver1.publicKey)
+      const receiver2BalanceB = nodeB.getBalance(receiver2.publicKey)
+
+      assert.equal(receiver1BalanceA, 30_000_000, 'Receiver1 should have 30_000_000 sats on Node A')
+      assert.equal(receiver2BalanceA, 0, 'Receiver2 should have 0 sats on Node A')
+      assert.equal(receiver1BalanceB, 30_000_000, 'Receiver1 should have 30_000_000 sats on Node B')
+      assert.equal(receiver2BalanceB, 0, 'Receiver2 should have 0 sats on Node B')
+    })
   })
 })
