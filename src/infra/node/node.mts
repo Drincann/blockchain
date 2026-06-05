@@ -624,7 +624,15 @@ export class Node {
     const uTxOuts: { [txidAndOutIndex: string]: UTxOut } = {}
     const uTxOutId = (input: TxIn | UTxOut) => `${input.txid}:${input.index}`
 
-    for (let block: Block | null = Block.deserialize(Block.GENESIS_BLOCK); block != null && block !== fork.next; block = block.next) {
+    const confirmedBlocks: Block[] = []
+    for (let block: Block | undefined = fork; block != null; block = this.blocks.get(hex(block.prev))) {
+      confirmedBlocks.push(block)
+      if (block.height === 0) {
+        break
+      }
+    }
+
+    for (const block of confirmedBlocks.reverse()) {
       for (let tx of block.transactions) {
         const referencedUTxOuts: (UTxOut | undefined)[] = tx.inputs.map(input => uTxOuts[uTxOutId(input)])
         if (referencedUTxOuts.includes(undefined)) {
@@ -633,6 +641,10 @@ export class Node {
 
         referencedUTxOuts.forEach(uTxOut => delete uTxOuts[uTxOutId(uTxOut!)])
         UTxOut.fromTransaction(block.hash(), tx).forEach(uTxOut => uTxOuts[uTxOutId(uTxOut)] = uTxOut)
+      }
+
+      if (block.height > 0) {
+        UTxOut.fromTransaction(block.hash(), block.coinbase).forEach(uTxOut => uTxOuts[uTxOutId(uTxOut)] = uTxOut)
       }
     }
 
