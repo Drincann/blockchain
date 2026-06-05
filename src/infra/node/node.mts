@@ -537,6 +537,8 @@ export class Node {
       // validate transactions
       let totalFee = 0
       for (let tx of block.transactions) {
+        this.assertUniqueTransactionInputs(tx)
+
         // assert tx inputs all refer to unspent outputs
         const referencedUTxOuts: (UTxOut | undefined)[] = tx.inputs.map(input => uTxOuts.get(input))
         if (referencedUTxOuts.includes(undefined)) {
@@ -703,6 +705,7 @@ export class Node {
     for (const serializedTx of response.txs) {
       try {
         const incomingTx = Transaction.deserialize(hexBytes(serializedTx))
+        this.assertUniqueTransactionInputs(incomingTx)
 
         // assert tx inputs all refer to unspent outputs
         const referencedUTxOuts: (UTxOut | undefined)[] = incomingTx.inputs.map(input => this.uTxOuts.get(input))
@@ -748,6 +751,17 @@ export class Node {
     }
     if (validTxIds.size > 0) {
       this.server.broadcast({ type: 'txinv', data: { txids: Array.from(validTxIds) } })
+    }
+  }
+
+  private assertUniqueTransactionInputs(tx: Transaction): void {
+    const spentOutputs = new Set<string>()
+    for (const input of tx.inputs) {
+      const outputId = `${input.txid}:${input.index}`
+      if (spentOutputs.has(outputId)) {
+        throw new Error('Transaction contains duplicate inputs')
+      }
+      spentOutputs.add(outputId)
     }
   }
 }
