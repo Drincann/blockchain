@@ -527,6 +527,10 @@ export class Node {
 
     // validate blocks
     for (let block: Block | null = start; block != null; block = block.next) {
+      if (block.ts >= Date.now() + MAX_FUTURE_DRIFT_IN_MILLS) {
+        throw new Error('Block timestamp too far in the future')
+      }
+
       const duration = prev.ts - last(block, 10).ts
       const expectedDifficulty = this.getExpectedDifficulty(prev, duration)
 
