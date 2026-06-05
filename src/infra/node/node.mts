@@ -21,6 +21,9 @@ import {
 } from "../../app/config.mts";
 import { TransactionPool } from "./txpool.mts";
 
+const MAX_TX_INVENTORY_SIZE = 1024
+const MAX_TX_FETCH_RESPONSE_SIZE = 1024
+
 /**
  * A full node in the blockchain network
  */
@@ -676,7 +679,12 @@ export class Node {
   private async getTxs(session: Session): Promise<void> {
     const txids = session.data?.txids
     if (!Array.isArray(txids)) {
-      session.respond({ txs: this.transactionPool.getAll().map(pendingTx => pendingTx.tx.serialize()) })
+      session.respond({ txs: this.transactionPool.getAll().slice(0, MAX_TX_FETCH_RESPONSE_SIZE).map(pendingTx => pendingTx.tx.serialize()) })
+      return
+    }
+
+    if (txids.length > MAX_TX_INVENTORY_SIZE || !txids.every(isValidTxId)) {
+      session.respond({ txs: [] })
       return
     }
 
@@ -688,6 +696,9 @@ export class Node {
     if (!Array.isArray(txids)) {
       return
     }
+    if (txids.length > MAX_TX_INVENTORY_SIZE || !txids.every(isValidTxId)) {
+      return
+    }
 
     const unknownTxids = txids.filter(txid => !this.transactionPool.has(txid))
     if (unknownTxids.length === 0) {
@@ -696,6 +707,9 @@ export class Node {
 
     const response = await session.request('gettx', { txids: unknownTxids }).catch(() => null)
     if (!Array.isArray(response?.txs)) {
+      return
+    }
+    if (response.txs.length > MAX_TX_FETCH_RESPONSE_SIZE) {
       return
     }
 
@@ -756,4 +770,8 @@ function isValidStringStringMap(rawResponse: any): rawResponse is Record<string,
   return typeof rawResponse === 'object' && rawResponse !== null
     && Object.values(rawResponse).every(value => typeof value === 'string')
     && Object.keys(rawResponse).every(key => typeof key === 'string')
+}
+
+function isValidTxId(txid: unknown): txid is string {
+  return typeof txid === 'string' && /^[0-9a-f]{64}$/i.test(txid)
 }
