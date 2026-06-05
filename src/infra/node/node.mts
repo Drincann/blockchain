@@ -352,7 +352,7 @@ export class Node {
   }
 
   private async onNewBlock(block: Block): Promise<void> {
-    if (this.blocks.get(hex(block.hash())) || this.tip.height > block.height) {
+    if (this.blocks.get(hex(block.hash()))) {
       return
     }
 
