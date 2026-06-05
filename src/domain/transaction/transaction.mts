@@ -78,6 +78,20 @@ class Input {
   public static buildCoinbaseTxIn(blockHeight: number, data?: Uint8Array): Input {
     return new Input('0'.repeat(64), blockHeight, data ?? new Uint8Array())
   }
+
+  public assertValidSpendReference(): void {
+    if (!/^[0-9a-f]{64}$/i.test(this._txid) || this._txid === '0'.repeat(64)) {
+      throw new Error('Invalid transaction input txid')
+    }
+
+    if (!Number.isSafeInteger(this._index) || this._index < 0 || this._index > 0xffffffff) {
+      throw new Error('Invalid transaction input index')
+    }
+  }
+
+  public isCoinbaseAtHeight(blockHeight: number): boolean {
+    return this._txid === '0'.repeat(64) && this._index === blockHeight
+  }
 }
 export const TxIn = Input
 export type TxIn = Input
@@ -124,6 +138,16 @@ class Output {
 
   public static buildCoinbaseTxOut(toPubKey: Uint8Array, reward: number): Output {
     return new Output(reward, toPubKey)
+  }
+
+  public assertValidStructure(): void {
+    if (!Number.isSafeInteger(this._amount) || this._amount < 0) {
+      throw new Error('Invalid transaction output amount')
+    }
+
+    if (this._publicKey.length !== 65 || this._publicKey[0] !== 0x04) {
+      throw new Error('Invalid transaction output public key')
+    }
   }
 }
 export const TxOut = Output
@@ -293,5 +317,30 @@ export class Transaction {
     tx.addInput(Input.buildCoinbaseTxIn(blockHeight, data))
     tx.addOutput(Output.buildCoinbaseTxOut(toPubKey, reward))
     return tx
+  }
+
+  public assertValidRegularStructure(): void {
+    if (this._inputs.length === 0) {
+      throw new Error('Transaction must have at least one input')
+    }
+
+    if (this._outputs.length === 0) {
+      throw new Error('Transaction must have at least one output')
+    }
+
+    this._inputs.forEach(input => input.assertValidSpendReference())
+    this._outputs.forEach(output => output.assertValidStructure())
+  }
+
+  public assertValidCoinbaseStructure(blockHeight: number): void {
+    if (
+      this._inputs.length !== 1 ||
+      !this._inputs[0].isCoinbaseAtHeight(blockHeight) ||
+      this._outputs.length !== 1
+    ) {
+      throw new Error('Invalid coinbase transaction')
+    }
+
+    this._outputs[0].assertValidStructure()
   }
 }

@@ -537,6 +537,8 @@ export class Node {
       // validate transactions
       let totalFee = 0
       for (let tx of block.transactions) {
+        tx.assertValidRegularStructure()
+
         // assert tx inputs all refer to unspent outputs
         const referencedUTxOuts: (UTxOut | undefined)[] = tx.inputs.map(input => uTxOuts.get(input))
         if (referencedUTxOuts.includes(undefined)) {
@@ -577,9 +579,7 @@ export class Node {
 
       // validate coinbase transaction
       const coinbase = block.coinbase
-      if (coinbase.inputs.length !== 1 || coinbase.inputs[0].index !== block.height || coinbase.outputs.length !== 1) {
-        throw new Error('Invalid coinbase transaction')
-      }
+      coinbase.assertValidCoinbaseStructure(block.height)
 
       const maxCoinbaseOut = this.getCoinbaseRewardAtHeight(block.height) + totalFee
       if (coinbase.outputs[0].amount > maxCoinbaseOut) {
@@ -703,6 +703,7 @@ export class Node {
     for (const serializedTx of response.txs) {
       try {
         const incomingTx = Transaction.deserialize(hexBytes(serializedTx))
+        incomingTx.assertValidRegularStructure()
 
         // assert tx inputs all refer to unspent outputs
         const referencedUTxOuts: (UTxOut | undefined)[] = incomingTx.inputs.map(input => this.uTxOuts.get(input))
