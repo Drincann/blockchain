@@ -17,6 +17,13 @@ describe('Account', () => {
     assert(hex(account.publicKey) === hex(sameAccount.publicKey), 'public keys should match')
   })
 
+  it('rejects zero and out-of-range private keys', () => {
+    assert.throws(() => new Account(new Uint8Array(32)), /Invalid/)
+    assert.throws(() => new Account(new Uint8Array(32).fill(255)), /Invalid/)
+    const shortKey = new Account(Uint8Array.of(1))
+    assert.deepEqual(new Account(shortKey.privateKey).publicKey, shortKey.publicKey)
+  })
+
   it('account sign/verify', () => {
     const account = new Account()
     const data = new TextEncoder().encode('hello world')

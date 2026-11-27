@@ -1,3 +1,4 @@
+import { ECDH } from 'node:crypto'
 import elliptic from 'elliptic'
 import { Transaction } from './transaction.mts';
 
@@ -9,6 +10,14 @@ export class Account {
 
   constructor(privateKey?: Uint8Array) {
     if (privateKey) {
+      if (privateKey.length === 0 || privateKey.length > 32) {
+        throw new Error('Invalid secp256k1 private key length')
+      }
+      const scalar = BigInt('0x' + Buffer.from(privateKey).toString('hex'))
+      const order = BigInt('0x' + ec.curve.n.toString(16))
+      if (scalar === 0n || scalar >= order) {
+        throw new Error('Invalid secp256k1 private key')
+      }
       this.key = ec.keyFromPrivate(privateKey);
       return;
     }
@@ -22,6 +31,14 @@ export class Account {
 
   public get publicKey(): Uint8Array {
     return Buffer.from(this.key.getPublic().encode('array', false))
+  }
+
+  public static normalizePublicKey(key: Uint8Array): Uint8Array {
+    const uncompressed = ECDH.convertKey(key, 'secp256k1', undefined, undefined, 'uncompressed') as Buffer
+    if (uncompressed.length !== 65) {
+      throw new Error('Invalid secp256k1 public key')
+    }
+    return uncompressed
   }
 
   public sign(data: Uint8Array | Transaction): Uint8Array {
