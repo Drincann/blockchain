@@ -29,7 +29,7 @@ export class Server {
   private scheduleRefreshAddresses() {
     this.refreshInterval = setTimeout(async () => {
       await this.refreshAddresses()
-      this.scheduleRefreshAddresses()
+      if (!this.stopping) this.scheduleRefreshAddresses()
     }, 60_000)
   }
 

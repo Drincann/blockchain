@@ -17,17 +17,14 @@ export class BlockMiner {
     return this.block
   }
 
-  constructor(private block: Block) {
-    this.promise = new Promise(resolve => {
-      this.run(resolve)
-    })
-
-    this.promise.finally(() => { this.finished = true })
+  constructor(private block: Block, accept: (block: Block) => boolean = () => true) {
+    const work = new Promise<Block | null>(resolve => this.run(resolve))
+    this.promise = work.then(block => block && accept(block) ? block : null)
+      .finally(() => { this.finished = true })
   }
 
-  public async then(onFulfilled: (block: Block | null) => void): Promise<Block | null> {
-    this.promise.then(onFulfilled)
-    return this.promise
+  public then<T>(onFulfilled: (block: Block | null) => T, onRejected?: (error: unknown) => never): Promise<T> {
+    return this.promise.then(onFulfilled, onRejected)
   }
 
   private run(onSuccess: (block: Block | null) => void) {

@@ -80,6 +80,21 @@ export class UTxOutSet {
     return this.uTxOuts[UTxOutSet.id(input)]
   }
 
+  public getInputs(tx: Transaction): UTxOut[] {
+    const inputs = new Set<UTxOut>()
+    for (const input of tx.inputs) {
+      const output = this.get(input)
+      if (!output) {
+        throw new Error('Transaction input UTxOut not found')
+      }
+      if (inputs.has(output)) {
+        throw new Error('Duplicate transaction input')
+      }
+      inputs.add(output)
+    }
+    return [...inputs]
+  }
+
   public filter(predicate: (uTxOut: UTxOut) => boolean): UTxOut[] {
     return Object.values(this.uTxOuts).filter(predicate)
   }

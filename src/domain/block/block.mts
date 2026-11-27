@@ -1,5 +1,5 @@
 import { bitString, hex, hexBytes, sha256 } from "../../util/crypto.mts"
-import { MAX_BLOCK_TX_BYTES } from "../../app/config.mts"
+import { MAX_BLOCK_TX_BYTES, MAX_FUTURE_DRIFT_IN_MILLS, MEDIAN_TIME_PAST_WINDOW } from "../../app/config.mts"
 import { BlockMiner } from "../../infra/miner/miner.mts"
 import { Transaction } from "../transaction/transaction.mts"
 
@@ -179,6 +179,11 @@ export class Block {
     this.next = next
   }
 
+  public static medianTimePast(recentTimestamps: number[]): number {
+    const times = recentTimestamps.slice(0, MEDIAN_TIME_PAST_WINDOW).sort((a, b) => a - b)
+    return times[Math.floor(times.length / 2)]
+  }
+
   public isInvalidNext(next: Block, difficulty: number, mtp: number): boolean {
     return !this.isValidNext(next, difficulty, mtp)
   }
@@ -188,7 +193,7 @@ export class Block {
       return false
     }
 
-    if (next.ts < mtp) {
+    if (next.ts < mtp || next.ts >= Date.now() + MAX_FUTURE_DRIFT_IN_MILLS) {
       return false
     }
 
@@ -233,14 +238,12 @@ export class Block {
     const selected: Transaction[] = []
     let offset = reserved
 
-    let full = false
     for (const tx of txs) {
-      const serialized = tx.serialize()
-      if (offset + serialized.length >= MAX_BLOCK_TX_BYTES) {
-        full = true
-        break
+      const size = tx.bytesLength()
+      if (offset + size > MAX_BLOCK_TX_BYTES) {
+        continue
       }
-      offset += serialized.length
+      offset += size
       selected.push(tx)
     }
 
@@ -249,14 +252,15 @@ export class Block {
 
   public static deserialize(bytes: Uint8Array): Block {
     try {
-      if (bytes.length < 48) {
-        throw new Error('Data must be at least 48 bytes long')
+      if (bytes.length < 81) {
+        throw new Error('Data must be at least 81 bytes long')
       }
 
-      const height = new DataView(bytes.buffer, 0, 8).getBigUint64(0, false)
-      const ts = new DataView(bytes.buffer, 8, 8).getBigUint64(0, false)
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+      const height = view.getBigUint64(0, false)
+      const ts = view.getBigUint64(8, false)
       const prev = bytes.slice(16, 48)
-      const difficulty = new DataView(bytes.buffer, 48, 1).getUint8(0)
+      const difficulty = view.getUint8(48)
       const nonce = bytes.slice(49, 81)
       const txs = bytes.slice(81)
 

@@ -2,12 +2,14 @@ import { hex, hexBytes, sha256 } from "../../util/crypto.mts"
 import { removeDERPadding, padSuffix } from '../../util/common.mts'
 
 /**
- * serialization: 107 bytes
+ * serialization: 108 bytes
  * 0-31 txid (32 bytes transaction sha256 hash)
  * 32-35 index (big-endian 32-bit integer)
- * 36-108 DER encoded signature (padded to 72 bytes)
+ * 36-107 DER encoded signature (padded to 72 bytes)
  */
 class Input {
+  public static readonly BYTES = 108
+
   private _txid: string
   private _index: number
   private _signature?: Uint8Array
@@ -20,8 +22,15 @@ class Input {
     return this._index
   }
 
+  public get isCoinbase(): boolean {
+    return this._txid === '0'.repeat(64)
+  }
+
   public get signature(): Uint8Array | undefined {
-    return this._signature ? removeDERPadding(this._signature) : undefined
+    if (this.isCoinbase || !this._signature) {
+      return this._signature
+    }
+    return removeDERPadding(this._signature)
   }
 
   public signed(): boolean {
@@ -64,13 +73,13 @@ class Input {
   }
 
   public static deserialize(data: Uint8Array): Input {
-    if (data.length !== 108) {
+    if (data.length !== Input.BYTES) {
       throw new Error('Invalid input data length')
     }
 
     const tx = hex(data.slice(0, 32))
-    const index = new DataView(data.slice(32, 36).buffer).getUint32(0, false)
-    const signature = removeDERPadding(data.slice(36))
+    const index = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(32, false)
+    const signature = data.slice(36)
 
     return new Input(tx, index, signature)
   }
@@ -88,6 +97,8 @@ export type TxIn = Input
  * 8-72 publicKey (65 bytes public key)
  */
 class Output {
+  public static readonly BYTES = 73
+
   private _amount: number
   private _publicKey: Uint8Array
 
@@ -109,6 +120,9 @@ class Output {
   }
 
   public serialize(): Uint8Array {
+    if (this._publicKey.length !== 65) {
+      throw new Error('Transaction output requires a 65-byte public key')
+    }
     const amount = new Uint8Array(8)
     new DataView(amount.buffer).setBigUint64(0, BigInt(this._amount), false)
 
@@ -116,7 +130,10 @@ class Output {
   }
 
   public static deserialize(data: Uint8Array): Output {
-    const amount = new DataView(data.slice(0, 8).buffer).getBigUint64(0, false)
+    if (data.length !== Output.BYTES) {
+      throw new Error('Invalid output data length')
+    }
+    const amount = new DataView(data.buffer, data.byteOffset, data.byteLength).getBigUint64(0, false)
     const publicKey = data.slice(8)
 
     return new Output(Number(amount), publicKey)
@@ -138,6 +155,8 @@ export type TxOut = Output
  * ...-... outputs (variable length, each output is 73 bytes)
  */
 export class Transaction {
+  public static readonly COINBASE_BYTES = 8 + Input.BYTES + Output.BYTES
+
   public display(): {
     id: string
     inputs: { txid: string; index: number; signature: string | null }[]
@@ -186,7 +205,7 @@ export class Transaction {
   }
 
   public bytesLength(): number {
-    return 8 + this._inputs.length * 108 + this._outputs.length * 73
+    return 8 + this._inputs.length * Input.BYTES + this._outputs.length * Output.BYTES
   }
 
   public get id(): Uint8Array {
@@ -236,9 +255,10 @@ export class Transaction {
   }
 
   public static deserialize(data: Uint8Array): Transaction {
-    const inputCount = new DataView(data.slice(0, 4).buffer).getUint32(0, false)
-    const outputCount = new DataView(data.slice(4, 8).buffer).getUint32(0, false)
-    const expectedLength = 8 + inputCount * 108 + outputCount * 73
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+    const inputCount = view.getUint32(0, false)
+    const outputCount = view.getUint32(4, false)
+    const expectedLength = 8 + inputCount * Input.BYTES + outputCount * Output.BYTES
     if (data.length !== expectedLength) {
       throw new Error('Invalid transaction data length')
     }
@@ -247,15 +267,15 @@ export class Transaction {
 
     let offset = 8
     for (let i = 0; i < inputCount; i++) {
-      const inputData = data.slice(offset, offset + 108)
+      const inputData = data.slice(offset, offset + Input.BYTES)
       inputs.push(Input.deserialize(inputData))
-      offset += 108
+      offset += Input.BYTES
     }
 
     for (let i = 0; i < outputCount; i++) {
-      const outputData = data.slice(offset, offset + 73)
+      const outputData = data.slice(offset, offset + Output.BYTES)
       outputs.push(Output.deserialize(outputData))
-      offset += 73
+      offset += Output.BYTES
     }
 
     const tx = new Transaction()
@@ -270,14 +290,15 @@ export class Transaction {
 
   public static deserializeMany(data: Uint8Array): Transaction[] {
     const txs: Transaction[] = []
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
     let offset = 0
     while (offset < data.length) {
       if (offset + 8 > data.length) {
         throw new Error('Invalid transaction data length')
       }
-      const inputCount = new DataView(data.slice(offset, offset + 4).buffer).getUint32(0, false)
-      const outputCount = new DataView(data.slice(offset + 4, offset + 8).buffer).getUint32(0, false)
-      const txLength = 8 + inputCount * 108 + outputCount * 73
+      const inputCount = view.getUint32(offset, false)
+      const outputCount = view.getUint32(offset + 4, false)
+      const txLength = 8 + inputCount * Input.BYTES + outputCount * Output.BYTES
       if (offset + txLength > data.length) {
         throw new Error('Invalid transaction data length')
       }

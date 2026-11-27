@@ -4,7 +4,7 @@ import { Account } from "../src/domain/transaction/account.mts"
 import { hex, hexBytes } from "../src/util/crypto.mts"
 import { TxIn, TxOut, Transaction } from "../src/domain/transaction/transaction.mts"
 import { TransactionPool } from "../src/infra/node/txpool.mts"
-import { UTxOut } from "../src/domain/transaction/utxo.mts"
+import { UTxOut, UTxOutSet } from "../src/domain/transaction/utxo.mts"
 
 describe('Transaction', () => {
   describe('Input', () => {
@@ -72,6 +72,28 @@ describe('Transaction', () => {
     assert.equal(hex(deserialized.outputs[1].publicKey), hex(change.publicKey), 'change public key should match')
 
     assert.equal(hex(tx.id), hex(deserialized.id), 'transaction hash should match')
+  })
+
+  it('round-trips transaction fields from a sliced buffer', () => {
+    const tx = new Transaction()
+      .addInput(new TxIn('12'.repeat(32), 3, new Uint8Array(72)))
+      .addOutput(new TxOut(12345, new Account().publicKey))
+    const bytes = Buffer.concat([Buffer.alloc(17), tx.serialize()]).subarray(17)
+    const [decoded] = Transaction.deserializeMany(bytes)
+    assert.deepEqual(decoded.serialize(), tx.serialize())
+  })
+
+  it('requires each resolved output to appear only once', () => {
+    const output = new UTxOut({
+      blockhash: 'test', txid: '12'.repeat(32), index: 0,
+      output: new TxOut(50, new Account().publicKey)
+    })
+    const outputs = new UTxOutSet([output])
+    const tx = new Transaction().addInput(new TxIn(output.txid, 0))
+    assert.deepEqual(outputs.getInputs(tx), [output])
+    tx.addInput(new TxIn(output.txid, 0))
+    assert.throws(() => outputs.getInputs(tx), /Duplicate transaction input/)
+    assert.equal(outputs.get(tx.inputs[0]), output)
   })
 
   it('length calculation', () => {

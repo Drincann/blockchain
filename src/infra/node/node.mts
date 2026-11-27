@@ -12,11 +12,11 @@ import { Account } from "../../domain/transaction/account.mts";
 
 import {
   COINBASE_REWARD,
+  MAX_BLOCK_TX_BYTES,
   REWARD_HALVING_EVERY_BLOCKS,
   BLOCK_GENERATION_TARGET_IN_MILLS,
   DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS,
   MEDIAN_TIME_PAST_WINDOW,
-  MAX_FUTURE_DRIFT_IN_MILLS,
   MIN_TX_FEES_EVERY_BYTE
 } from "../../app/config.mts";
 import { TransactionPool } from "./txpool.mts";
@@ -25,9 +25,9 @@ import { TransactionPool } from "./txpool.mts";
  * A full node in the blockchain network
  */
 export class Node {
-  private blocks: Map<string, Block> = new Map([[hex(Block.GENESIS_BLOCK_HASH), Block.deserialize(Block.GENESIS_BLOCK)]])
   private tip: Block = Block.deserialize(Block.GENESIS_BLOCK)
-  private server: Server
+  private blocks: Map<string, Block> = new Map([[hex(Block.GENESIS_BLOCK_HASH), this.tip]])
+  private server?: Server
   private queue: SyncronizedQueue = new SyncronizedQueue()
   private mining: BlockMiner | null = null
   private _account: Account = new Account()
@@ -50,11 +50,12 @@ export class Node {
   }
 
   public stop() {
+    this.cancelMining()
     this.server?.close()
   }
 
   public peer() {
-    return this.server.getPeersAddresses()
+    return this.server?.getPeersAddresses() ?? []
   }
 
   public block(hash: string): Block | undefined {
@@ -88,7 +89,7 @@ export class Node {
         console.error('Inventory handler error')
       }))
       .on('getblock', this.getBlock.bind(this))
-      .on('txinv', this.onNewTxs.bind(this))
+      .on('txinv', session => this.queue.schedule(() => this.onNewTxs(session)))
       .on('gettx', this.getTxs.bind(this))
       .onConnect(peer => {
         peer.send('blockinv', this.tip.summary)
@@ -98,130 +99,79 @@ export class Node {
     console.log(`Node started on port ${port}`)
   }
 
-  public async mineAsync(data: Uint8Array): Promise<Block | null> {
-    if (this.mining?.isNotFinish()) {
-      return this.mining.then(v => v)
-    }
-
-    const newBlock = this.generateBlock(data)
-    this.mining = newBlock.mine()
-    this.tryAccept(await this.mining)
-    return await this.mining
+  public async mineAsync(data?: Uint8Array): Promise<Block | null> {
+    return await this.submitMine(data)
   }
 
-  public submitMine(data: Uint8Array): BlockMiner {
+  public submitMine(data?: Uint8Array): BlockMiner {
     if (this.mining?.isNotFinish()) {
       return this.mining
     }
 
-    const newBlock = this.generateBlock(data)
-    this.mining = newBlock.mine()
+    this.mining = new BlockMiner(this.generateBlock(data), block =>
+      this.acceptBlocks({ [hex(block.hash())]: block }, block, block))
+    return this.mining
+  }
 
-    this.mining?.then(minedBlock => {
-      this.tryAccept(minedBlock)
-    })
-
-    return this.mining!
+  public cancelMining() {
+    this.mining?.cancel()
   }
 
   public send(to: Uint8Array, amount: number): { tx: Transaction, fees: number } {
-    const uTxOuts: UTxOut[] =
-      this.uTxOuts
-        .filter(UTxOutSet.accountFilter(this.account.publicKey))
-        .filter(UTxOutSet.excludePendingTxIns(this.transactionPool))
-        .sort((a, b) => (a.output.amount || 0) - (b.output.amount || 0))
-
-    const total = uTxOuts.reduce((sum, uTxOut) => sum + (uTxOut.output.amount || 0), 0)
-    if (total < amount) {
-      throw new Error('Insufficient balance')
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      throw new Error('Amount must be a positive integer in sats')
     }
 
-    const willSpend: UTxOut[] = []
-    let inputValue = 0
-    for (const uTxOut of uTxOuts) {
-      willSpend.push(uTxOut)
-      inputValue += (uTxOut.output.amount || 0)
-      if (inputValue >= amount) {
-        break
-      }
-    }
-    const unspent = uTxOuts.filter(uTxOut => !willSpend.includes(uTxOut))
+    const tx = new Transaction().addOutput(new TxOut(amount, Account.normalizePublicKey(to)))
+    const available = this.uTxOuts.filter(UTxOutSet.accountFilter(this.account.publicKey))
+      .filter(UTxOutSet.excludePendingTxIns(this.transactionPool))
+      .sort((a, b) => b.output.amount - a.output.amount)
 
-    const tx = new Transaction()
-    for (const uTxOut of willSpend) {
-      tx.addInput(new TxIn(uTxOut.txid, uTxOut.index))
-    }
-    tx.addOutput(new TxOut(amount, to))
-
-    // change
-    let changeOutput: TxOut | null = null
-    if (inputValue > amount) {
-      changeOutput = new TxOut(inputValue - amount, this.account.publicKey)
-      tx.addOutput(changeOutput)
-    }
-
-    const fees = tx.bytesLength() * MIN_TX_FEES_EVERY_BYTE
-    if (total < amount + fees) {
-      throw new Error(`Insufficient balance to cover transaction fees, need at least ${fees} sats more`)
-    }
-
-    if (!this.trySetFees(tx, changeOutput)) {
-      if (!changeOutput) {
-        changeOutput = new TxOut(0, this.account.publicKey)
-        tx.addOutput(changeOutput)
+    let totalIn = 0
+    for (const utxo of available) {
+      tx.addInput(new TxIn(utxo.txid, utxo.index))
+      totalIn += utxo.output.amount
+      const size = tx.bytesLength()
+      if (size + Transaction.COINBASE_BYTES > MAX_BLOCK_TX_BYTES) {
+        throw new Error('Transaction is too large to fit in a block')
       }
 
-      while (!this.trySetFees(tx, changeOutput)) {
-        const utxo = unspent.shift()
-        if (utxo == null) {
-          throw new Error('Insufficient balance to cover transaction fees')
+      const remaining = totalIn - amount
+      if (remaining < size * MIN_TX_FEES_EVERY_BYTE) {
+        continue
+      }
+
+      const sizeWithChange = size + TxOut.BYTES
+      const change = remaining - sizeWithChange * MIN_TX_FEES_EVERY_BYTE
+      if (change > 0) {
+        if (sizeWithChange + Transaction.COINBASE_BYTES > MAX_BLOCK_TX_BYTES) {
+          throw new Error('Transaction is too large to fit in a block')
         }
-
-        tx.addInput(new TxIn(utxo.txid, utxo.index))
-        changeOutput.amount += utxo.output.amount
+        tx.addOutput(new TxOut(change, this.account.publicKey))
       }
+
+      for (let i = 0; i < tx.inputs.length; i++) {
+        this.account.signTxIn(tx, i)
+      }
+      const fees = totalIn - tx.outputValue
+      this.transactionPool.add({ tx, fees })
+      this.server?.broadcast({ type: 'txinv', data: { txids: [hex(tx.id)] } })
+      return { tx, fees }
     }
 
-    // sign all inputs
-    for (let i = 0; i < tx.inputs.length; i++) {
-      this.account.signTxIn(tx, i)
-    }
-
-    this.transactionPool.add({ tx, fees: this.getTxInAmount(tx) - tx.outputValue })
-    this.server.broadcast({ type: 'txinv', data: { txids: [hex(tx.id)] } })
-
-    return { tx, fees }
-  }
-
-  private trySetFees(tx: Transaction, changeOutput: TxOut | null): boolean {
-    const totalIn = this.getTxInAmount(tx)
-    const totalOut = tx.outputValue
-    const minFees = tx.bytesLength() * MIN_TX_FEES_EVERY_BYTE
-    if (totalIn === totalOut + minFees) {
-      return true
-    }
-    if (!changeOutput) {
-      return false
-    }
-
-    if (changeOutput.amount < minFees) {
-      return false
-    }
-
-    changeOutput.amount -= minFees
-    return true
+    throw new Error(totalIn < amount ? 'Insufficient balance' : 'Insufficient balance to cover transaction fees')
   }
 
   public getBalance(pubkey?: Uint8Array): number {
-    return this.uTxOuts.getBalance(pubkey || this.account.publicKey)
+    return this.uTxOuts.getBalance(pubkey ? Account.normalizePublicKey(pubkey) : this.account.publicKey)
   }
 
   public getUnspentOutputs(pubkey?: Uint8Array): UTxOut[] {
-    return this.uTxOuts.filter(UTxOutSet.accountFilter(pubkey || this.account.publicKey))
+    return this.uTxOuts.filter(UTxOutSet.accountFilter(pubkey ? Account.normalizePublicKey(pubkey) : this.account.publicKey))
   }
 
   private generateBlock(data?: Uint8Array): Block {
-    const block = this.tip.generate({ difficulty: this.getCurrentDifficulty() })
+    const block = this.tip.generate({ difficulty: this.getExpectedDifficulty(this.tip, this.recentTimestamps(this.tip)) })
     const orderedTxs = this.transactionPool.orderByFeesDesc()
     const coinbase = Transaction.buildCoinbaseTx(
       this.account.publicKey,
@@ -232,7 +182,7 @@ export class Node {
 
     // select transactions & calculate coinbase reward
     const selectedTxs = Block.selectTransactions(orderedTxs.map(pendingTx => pendingTx.tx), coinbase.bytesLength())
-    const txFees = this.calculateTotalFees(selectedTxs)
+    const txFees = selectedTxs.reduce((fees, tx) => fees + this.transactionPool.get(hex(tx.id))!.fees, 0)
     coinbase.outputs[0].amount = this.getCoinbaseRewardAtHeight(block.height) + txFees
 
     // add transactions
@@ -247,35 +197,16 @@ export class Node {
     return block
   }
 
-  private calculateTotalFees(transactionPool: Transaction[]): number {
-    return transactionPool.reduce((total, tx) => total + this.getTxInAmount(tx) - tx.outputValue, 0)
-  }
-
-  private getTxInAmount(tx: Transaction) {
-    return tx.inputs.reduce((total, input) => {
-      const uTxOut = this.uTxOuts.get(input)
-      if (!uTxOut) {
-        throw new Error('Transaction input UTxOut not found when calculating transaction fees')
-      }
-
-      return total + (uTxOut ? uTxOut.output.amount || 0 : 0)
-    }, 0)
-  }
-
-  private tryAccept(minedBlock: Block | null) {
-    if (!minedBlock) return
-    this.onNewBlock(minedBlock)
-  }
-
-  private getExpectedDifficulty(prev: Block, lastDuration: number): number {
+  private getExpectedDifficulty(prev: Block, times: number[]): number {
     if (prev.height % DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS !== 0) {
       return prev.difficulty
     }
 
+    const lastDuration = prev.ts - times[Math.min(times.length, DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS) - 1]
     const expected = BLOCK_GENERATION_TARGET_IN_MILLS * DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS
 
     if (lastDuration < expected / 2) {
-      return Math.min(prev.difficulty + 1, 2 << 7)
+      return Math.min(prev.difficulty + 1, 255)
     }
     if (lastDuration > expected * 2) {
       return Math.max(prev.difficulty - 1, 1)
@@ -283,40 +214,20 @@ export class Node {
     return prev.difficulty
   }
 
-  private getCurrentDifficulty(): number {
-    if (this.tip.height % DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS !== 0) {
-      return this.tip.difficulty
+  private recentTimestamps(tip: Block, incoming: Record<string, Block> = {}): number[] {
+    const times: number[] = []
+    const window = Math.max(MEDIAN_TIME_PAST_WINDOW, DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS)
+    let block: Block | undefined = tip
+    while (block && times.length < window) {
+      times.push(block.ts)
+      const prevHash = hex(block.prev)
+      block = incoming[prevHash] ?? this.blocks.get(prevHash)
     }
-
-    const end = this.tip.ts
-    const start = this.top(9).ts
-    const duration = end - start
-    const expected = BLOCK_GENERATION_TARGET_IN_MILLS * DIFFICULTY_ADJUSTMENT_EVERY_BLOCKS
-
-    if (duration < expected / 2) {
-      return Math.min(this.tip.difficulty + 1, 2 << 7)
-    }
-    if (duration > expected * 2) {
-      return Math.max(this.tip.difficulty - 1, 1)
-    }
-    return this.tip.difficulty
-  }
-
-  private top(n: number): Block {
-    let block = this.tip
-    for (let i = 0; i < n; i++) {
-      const prev = this.blocks.get(hex(block.prev))
-      if (prev == null) {
-        return block
-      }
-      block = prev
-    }
-
-    return block
+    return times
   }
 
   public async addPeer(address: string): Promise<boolean> {
-    const socket = await this.server.connect(address)
+    const socket = await this.server?.connect(address)
     if (socket != null) {
       return true
     }
@@ -331,7 +242,7 @@ export class Node {
   private async fetchBatchBlocks(peer: Session, frontier: string, batch: number): Promise<Record<string, Block>> {
     let hash2Block = await peer.request('getblock', { frontier, batch }).catch(() => ({}))
     if (isValidStringStringMap(hash2Block)) {
-      const blocks = {}
+      const blocks: Record<string, Block> = {}
       for (const hash in hash2Block) {
         blocks[hash] = Block.deserialize(hexBytes(hash2Block[hash]))
       }
@@ -342,56 +253,13 @@ export class Node {
   private async fetchBlocks(peer: Session, hashes: string[]): Promise<Record<string, Block>> {
     let hash2Block = await peer.request('getblock', { hash: hashes }).catch(() => ({}))
     if (isValidStringStringMap(hash2Block)) {
-      const blocks = {}
+      const blocks: Record<string, Block> = {}
       for (const hash in hash2Block) {
         blocks[hash] = Block.deserialize(hexBytes(hash2Block[hash]))
       }
       return blocks
     }
     return {}
-  }
-
-  private async onNewBlock(block: Block): Promise<void> {
-    if (this.blocks.get(hex(block.hash())) || this.tip.height > block.height) {
-      return
-    }
-
-    const orphans = { [hex(block.hash())]: block } as Record<string, Block>
-
-    let prevHash = hex(block.prev)
-    const fork = this.blocks.get(prevHash)
-    if (!fork) {
-      throw new Error('Previous block not found')
-    }
-
-    try {
-      if (fork.next == null) {
-        this.validateNewBlocksAndUpdateUTxOuts(orphans, block, block)
-      } else {
-        this.validateDifficulty(fork.next, orphans)
-        this.validateAndRecalculateUTxOuts(orphans, block, block)
-      }
-    } catch {
-      // validation failed
-      return
-    }
-
-    this.mining?.cancel()
-
-    let oldForkNext = fork.next
-    fork.connect(block)
-
-    while (oldForkNext) {
-      this.blocks.delete(hex(oldForkNext.hash()))
-      oldForkNext = oldForkNext.next
-    }
-
-    for (const hash in orphans) {
-      this.blocks.set(hash, orphans[hash])
-    }
-
-    this.tip = block
-    this.server.broadcast({ type: 'blockinv', data: block.summary })
   }
 
   private async onNewBlocks(session: Session): Promise<void> {
@@ -440,211 +308,121 @@ export class Node {
       start = Date.now()
     }
 
-    const fork = this.blocks.get(hex(block.prev))
-    if (!fork) {
-      throw new Error('Previous block not found')
-    }
-    try {
-      if (fork.next == null) {
-        this.validateNewBlocksAndUpdateUTxOuts(orphans, block, newBlock)
-      } else {
-        this.validateDifficulty(fork.next, orphans)
-        this.validateAndRecalculateUTxOuts(orphans, block, newBlock)
-      }
-    } catch (err) {
-      // validation failed
-      console.log('Received invalid block chain from peer: ' + session.peer.address)
-      console.error(err)
-      return
-    }
-    this.mining?.cancel()
-    let oldForkNext = fork.next
-    fork.connect(block)
-    while (oldForkNext) {
-      this.blocks.delete(hex(oldForkNext.hash()))
-      oldForkNext = oldForkNext.next
-    }
-    for (const hash in orphans) {
-      this.blocks.set(hash, orphans[hash])
-    }
-    this.tip = newBlock
-    this.server.broadcast({ type: 'blockinv', data: newBlock.summary })
-    if (Object.keys(orphans).length > 1) {
+    if (this.acceptBlocks(orphans, block, newBlock) && Object.keys(orphans).length > 1) {
       console.log(`Accepted ${Object.keys(orphans).length} new blocks, cost: ${Date.now() - start}ms`)
     }
   }
 
-  private validateDifficulty(localBlockStart: Block | null, incomingBlocks: Record<string, Block>) {
-    if (!localBlockStart) {
-      return
+  private acceptBlocks(blocks: Record<string, Block>, start: Block, tip: Block): boolean {
+    const fork = this.blocks.get(hex(start.prev))
+    if (!fork || this.blocks.has(hex(tip.hash()))) {
+      return false
+    }
+    if (fork.next && !this.hasMoreWork(fork.next, blocks)) {
+      return false
     }
 
-    const incomingDifficulty = Object.values(incomingBlocks).reduce((sum, block) => sum + 2 ** block.difficulty, 0)
-    const localDifficulty = (() => {
-      let total = 0
-      for (let block: Block | null = localBlockStart; block != null; block = block.next) {
-        total += 2 ** block.difficulty
+    const outputs = fork.next ? this.unspentOutputsAt(fork) : this.uTxOuts.copy()
+    try {
+      this.validateBlocks(blocks, start, fork, outputs)
+    } catch (error) {
+      console.error('Invalid block chain:', error)
+      return false
+    }
+
+    this.mining?.cancel()
+    for (let block = fork.next; block; block = block.next) {
+      this.blocks.delete(hex(block.hash()))
+    }
+    fork.connect(start)
+    for (const [hash, block] of Object.entries(blocks)) {
+      this.blocks.set(hash, block)
+    }
+    this.tip = tip
+    this.uTxOuts = outputs
+    for (const { tx } of this.transactionPool.getAll()) {
+      if (tx.inputs.some(input => !outputs.get(input))) {
+        this.transactionPool.remove(hex(tx.id))
       }
-      return total
-    })()
-
-    if (incomingDifficulty >= localDifficulty) {
-      return
     }
-
-    throw new Error('Incoming chain has insufficient cumulative difficulty')
+    this.server?.broadcast({ type: 'blockinv', data: tip.summary })
+    return true
   }
 
-  private validateNewBlocksAndUpdateUTxOuts(blocks: Record<string, Block>, start: Block, tip: Block, uTxOutsState?: UTxOutSet) {
-    if (tip.ts >= Date.now() + MAX_FUTURE_DRIFT_IN_MILLS) {
-      throw new Error('Block timestamp too far in the future')
+  private hasMoreWork(local: Block, incoming: Record<string, Block>): boolean {
+    let localWork = 0n
+    for (let block: Block | null = local; block; block = block.next) {
+      localWork += 1n << BigInt(block.difficulty)
     }
+    const incomingWork = Object.values(incoming).reduce((work, block) => work + (1n << BigInt(block.difficulty)), 0n)
+    return incomingWork > localWork
+  }
 
-    const last = (tail: Block, n: number): Block => {
-      let block = tail
-      for (let i = 0; i < n; i++) {
-        const prev = blocks[hex(block.prev)] ?? this.blocks.get(hex(block.prev))
-        if (prev == null) {
-          return block
-        }
-        block = prev
-      }
-
-      return block
-    }
-
-    function mtp(tail: Block): number {
-      return last(tail, Math.floor(MEDIAN_TIME_PAST_WINDOW / 2)).ts
-    }
-
-    let prev = this.blocks.get(hex(start.prev))
-    if (!prev) {
-      throw new Error('Previous block not found')
-    }
-
-    // utxos copy
-    const uTxOuts: UTxOutSet = (uTxOutsState ?? this.uTxOuts).copy()
-
-    // validate blocks
-    for (let block: Block | null = start; block != null; block = block.next) {
-      const duration = prev.ts - last(block, 10).ts
-      const expectedDifficulty = this.getExpectedDifficulty(prev, duration)
-
-      if (prev.isInvalidNext(block, expectedDifficulty, mtp(prev))) {
+  private validateBlocks(blocks: Record<string, Block>, start: Block, prev: Block, outputs: UTxOutSet) {
+    for (let block: Block | null = start; block; block = block.next) {
+      const times = this.recentTimestamps(prev, blocks)
+      const difficulty = this.getExpectedDifficulty(prev, times)
+      if (prev.isInvalidNext(block, difficulty, Block.medianTimePast(times))) {
         throw new Error('Invalid block sequence or proof')
       }
-
-      // validate transactions
-      let totalFee = 0
-      for (let tx of block.transactions) {
-        // assert tx inputs all refer to unspent outputs
-        const referencedUTxOuts: (UTxOut | undefined)[] = tx.inputs.map(input => uTxOuts.get(input))
-        if (referencedUTxOuts.includes(undefined)) {
-          throw new Error('Transaction input UTxOut not found')
-        }
-
-        // assert total input >= total output
-        const totalIn = referencedUTxOuts.reduce((sum, uTxOut) => sum + (uTxOut!.output.amount || 0), 0)
-        const totalOut = tx.outputs.reduce((sum, output) => sum + output.amount, 0)
-        if (totalIn < totalOut) {
-          throw new Error('Transaction outputs exceed inputs')
-        }
-
-        // verify all input signatures
-        for (let i = 0; i < tx.inputs.length; i++) {
-          const input = tx.inputs[i]
-          if (!input.signed()) {
-            throw new Error('Transaction input not signed')
-          }
-          if (!Account.verifyTxIn(tx, i, referencedUTxOuts[i]!.output.publicKey)) {
-            throw new Error('Transaction input signature invalid')
-          }
-        }
-
-        // verify transaction fees
-        const txBytes = tx.bytesLength()
-        const minFees = txBytes * MIN_TX_FEES_EVERY_BYTE
-        if (totalIn - totalOut < minFees) {
-          throw new Error('Transaction fees too low')
-        }
-
-        // update UTxOuts
-        referencedUTxOuts.forEach(uTxOut => uTxOuts.remove(uTxOut!))
-        UTxOut.fromTransaction(block.hash(), tx).forEach(uTxOut => uTxOuts.add(uTxOut))
-
-        totalFee += (totalIn - totalOut)
-      }
-
-      // validate coinbase transaction
-      const coinbase = block.coinbase
-      if (coinbase.inputs.length !== 1 || coinbase.inputs[0].index !== block.height || coinbase.outputs.length !== 1) {
-        throw new Error('Invalid coinbase transaction')
-      }
-
-      const maxCoinbaseOut = this.getCoinbaseRewardAtHeight(block.height) + totalFee
-      if (coinbase.outputs[0].amount > maxCoinbaseOut) {
-        throw new Error('Coinbase transaction output exceeds maximum')
-      }
-
-      // update UTxOuts for coinbase
-      UTxOut.fromTransaction(block.hash(), coinbase).forEach(uTxOut => uTxOuts.add(uTxOut))
-
+      this.applyBlockTransactions(block, outputs)
       prev = block
     }
+  }
 
-    // all valid, commit UTxOuts
-    this.uTxOuts = uTxOuts
-
-    // update transaction pool
-    for (let pendingTx of this.transactionPool.getAll()) {
-      for (let input of pendingTx.tx.inputs) {
-        if (this.uTxOuts.get(input) === undefined) {
-          this.transactionPool.remove(hex(pendingTx.tx.id))
-          break
-        }
+  private validateTransaction(tx: Transaction, outputs: UTxOutSet): number {
+    const inputs = outputs.getInputs(tx)
+    const fees = inputs.reduce((sum, input) => sum + input.output.amount, 0) - tx.outputValue
+    if (!Number.isSafeInteger(fees) || fees < tx.bytesLength() * MIN_TX_FEES_EVERY_BYTE) {
+      throw new Error('Insufficient transaction fees')
+    }
+    for (const [index, input] of inputs.entries()) {
+      if (!Account.verifyTxIn(tx, index, input.output.publicKey)) {
+        throw new Error('Transaction input signature invalid')
       }
     }
+    return fees
+  }
+
+  private applyBlockTransactions(block: Block, outputs: UTxOutSet) {
+    const hash = block.hash()
+    let totalFees = 0
+    for (const tx of block.transactions) {
+      totalFees += this.validateTransaction(tx, outputs)
+      tx.inputs.forEach(input => outputs.remove(input))
+      UTxOut.fromTransaction(hash, tx).forEach(output => outputs.add(output))
+    }
+
+    const coinbase = block.coinbase
+    if (coinbase?.inputs.length !== 1 || !coinbase.inputs[0].isCoinbase ||
+        coinbase.inputs[0].index !== block.height || coinbase.outputs.length !== 1) {
+      throw new Error('Invalid coinbase transaction')
+    }
+    if (coinbase.outputValue > this.getCoinbaseRewardAtHeight(block.height) + totalFees) {
+      throw new Error('Coinbase transaction output exceeds maximum')
+    }
+    UTxOut.fromTransaction(hash, coinbase).forEach(output => outputs.add(output))
   }
 
   private getCoinbaseRewardAtHeight(height: number): number {
     return Math.floor(COINBASE_REWARD / (2 ** Math.floor(height / REWARD_HALVING_EVERY_BLOCKS)))
   }
 
-  /**
-   * Recalculate UTxOuts from genesis to fork, then validate new chain from start to tip
-   * This is very inefficient, the best way is to rollback UTxOuts from tip to fork, but it's complex to implement, so make it work first
-   */
-  private validateAndRecalculateUTxOuts(blocks: Record<string, Block>, start: Block, tip: Block) {
-    // recalculate UTxOuts from genesis to fork
-    const fork = this.blocks.get(hex(start.prev))
-    if (!fork) {
-      throw new Error('Previous block not found')
+  private unspentOutputsAt(fork: Block): UTxOutSet {
+    const outputs = new UTxOutSet()
+    const genesis = this.blocks.get(hex(Block.GENESIS_BLOCK_HASH))!
+    // The live ledger starts empty at genesis. Replay the accepted blocks through the fork.
+    for (let block = genesis.next; block && block !== fork.next; block = block.next) {
+      this.applyBlockTransactions(block, outputs)
     }
-
-    const uTxOuts: { [txidAndOutIndex: string]: UTxOut } = {}
-    const uTxOutId = (input: TxIn | UTxOut) => `${input.txid}:${input.index}`
-
-    for (let block: Block | null = Block.deserialize(Block.GENESIS_BLOCK); block != null && block !== fork.next; block = block.next) {
-      for (let tx of block.transactions) {
-        const referencedUTxOuts: (UTxOut | undefined)[] = tx.inputs.map(input => uTxOuts[uTxOutId(input)])
-        if (referencedUTxOuts.includes(undefined)) {
-          throw new Error('Transaction input UTxOut not found during recalculation')
-        }
-
-        referencedUTxOuts.forEach(uTxOut => delete uTxOuts[uTxOutId(uTxOut!)])
-        UTxOut.fromTransaction(block.hash(), tx).forEach(uTxOut => uTxOuts[uTxOutId(uTxOut)] = uTxOut)
-      }
-    }
-
-    // validate new blocks and update UTxOuts
-    this.validateNewBlocksAndUpdateUTxOuts(blocks, start, tip, new UTxOutSet(Object.values(uTxOuts)))
+    return outputs
   }
 
   private async getBlock(session: Session): Promise<void> {
     const { hash: hashes, frontier, batch } = session.data ?? {}
 
     if (Array.isArray(hashes)) {
-      const serializedBlocks = {}
+      const serializedBlocks: Record<string, string> = {}
       for (const hash of hashes) {
         serializedBlocks[hash] = hex(this.blocks.get(hash)?.serialize())
       }
@@ -704,42 +482,17 @@ export class Node {
       try {
         const incomingTx = Transaction.deserialize(hexBytes(serializedTx))
 
-        // assert tx inputs all refer to unspent outputs
-        const referencedUTxOuts: (UTxOut | undefined)[] = incomingTx.inputs.map(input => this.uTxOuts.get(input))
-        if (referencedUTxOuts.includes(undefined)) {
-          throw new Error('Transaction input UTxOut not found')
+        if (incomingTx.bytesLength() + Transaction.COINBASE_BYTES > MAX_BLOCK_TX_BYTES) {
+          throw new Error('Transaction is too large to fit in a block')
         }
-
-        // assert total input >= total output
-        const totalIn = referencedUTxOuts.reduce((sum, uTxOut) => sum + (uTxOut!.output.amount || 0), 0)
-        const totalOut = incomingTx.outputs.reduce((sum, output) => sum + output.amount, 0)
-        if (totalIn < totalOut) {
-          throw new Error('Transaction outputs exceed inputs')
-        }
-        // transaction fees validation
-        const txBytes = incomingTx.serialize().length
-        const minFees = txBytes * MIN_TX_FEES_EVERY_BYTE
-        if (totalIn - totalOut < minFees) {
-          throw new Error('Transaction fees too low')
-        }
-
-        // verify all input signatures
-        for (let i = 0; i < incomingTx.inputs.length; i++) {
-          const input = incomingTx.inputs[i]
-          if (!input.signed()) {
-            throw new Error('Transaction input not signed')
-          }
-          if (!Account.verifyTxIn(incomingTx, i, referencedUTxOuts[i]!.output.publicKey)) {
-            throw new Error('Transaction input signature invalid')
-          }
-        }
+        const fees = this.validateTransaction(incomingTx, this.uTxOuts)
 
         // check if any input is already in the transaction pool
         if (incomingTx.inputs.some(input => this.transactionPool.has(this.uTxOuts.get(input)!))) {
           throw new Error('Transaction input already in pool')
         }
 
-        this.transactionPool.add({ tx: incomingTx, fees: totalIn - totalOut })
+        this.transactionPool.add({ tx: incomingTx, fees })
         validTxIds.add(hex(incomingTx.id))
       } catch (e) {
         console.error('Received invalid transaction from peer: ' + session.peer.address)
@@ -747,7 +500,7 @@ export class Node {
       }
     }
     if (validTxIds.size > 0) {
-      this.server.broadcast({ type: 'txinv', data: { txids: Array.from(validTxIds) } })
+      this.server?.broadcast({ type: 'txinv', data: { txids: Array.from(validTxIds) } })
     }
   }
 }

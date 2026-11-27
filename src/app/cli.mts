@@ -1,3 +1,4 @@
+import { createInterface } from 'node:readline'
 import { Account } from '../domain/transaction/account.mts'
 import { Node } from '../infra/node/node.mts'
 import { hex, hexBytes } from '../util/crypto.mts'
@@ -10,38 +11,26 @@ const write = (chars: string) => {
   process.stdout.write(chars)
 }
 
-const read = (): Promise<string> => {
-  return new Promise((resolve) => {
-    process.stdin.once('data', (data) => {
-      resolve(data.toString().trim())
-    })
-  })
-}
-
-const cleanup = () => {
-  node.stop()
-  process.stdin.removeAllListeners()
-  process.stdin.destroy()
-}
-
-const sleep = (ms: number) => {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
+const lines = createInterface({ input: process.stdin, terminal: false })
+const commands = lines[Symbol.asyncIterator]()
 
 let stoploop = false
-const mineloop = async (data: string) => {
-  while (1) {
-    if (stoploop) {
-      console.log('mineloop stopped')
-      return
-    }
-    const start = Date.now()
-    const block = await node.mineAsync(new Uint8Array(Buffer.from(data))).catch(() => null)
-    if (block == null) {
-      console.log('mine cancelled')
-      continue
-    }
+let pendingMine: Promise<void> | undefined
+let miningLoop: Promise<void> | undefined
+
+const mine = async (data: string) => {
+  const start = Date.now()
+  const block = await node.mineAsync(Buffer.from(data))
+  if (block) {
     write(`cost: ${Date.now() - start}ms\nnew block: ${hex(block.hash())}\n${JSON.stringify(block.display(), null, 2)}\n`)
+  } else {
+    write('mine cancelled\n')
+  }
+}
+
+const mineloop = async (data: string) => {
+  while (!stoploop) {
+    await mine(data)
   }
 }
 
@@ -49,9 +38,10 @@ write('\nSimple Blockchain CLI\n')
 write('Enter "q" to quit\n\n')
 
 while (true) {
-  await sleep(100)
   write('> ')
-  const input = (await read()).split(' ').map(s => s.trim()).filter(s => s !== '')
+  const line = await commands.next()
+  if (line.done) break
+  const input = line.value.trim().split(/\s+/).filter(Boolean)
   if (input[0] === 'q') {
     break
   }
@@ -71,16 +61,23 @@ while (true) {
     continue
   }
 
-  if (input[0] === 'balance') {
-    const specified = input[1]
-    if (specified) {
-      const balance = node.getBalance(hexBytes(specified))
-      write(`balance: ${balance} sats (${balance / 100_000_000} bitcoin)\n`)
-      continue
+  if (input[0] === 'balance' || input[0] === 'unspent') {
+    try {
+      const key = input[1] ? hexBytes(input[1]) : undefined
+      if (input[0] === 'balance') {
+        const balance = node.getBalance(key)
+        write(`balance: ${balance} sats (${balance / 100_000_000} bitcoin)\n`)
+      } else {
+        const unspent = node.getUnspentOutputs(key)
+        if (unspent.length === 0) {
+          write('no unspent outputs\n')
+        } else {
+          write(`unspent outputs:\n${unspent.map((u, i) => i + ': ' + JSON.stringify(u.display(), null, 2)).join('\n')}\n`)
+        }
+      }
+    } catch (e) {
+      write(`invalid public key: ${(e as Error).message}\n`)
     }
-
-    const balance = node.getBalance()
-    write(`balance: ${balance} sats (${balance / 100_000_000} bitcoin)\n`)
     continue
   }
 
@@ -90,15 +87,14 @@ while (true) {
       continue
     }
 
-    const toPublicKey = hexBytes(input[1])
-    const amount = parseInt(input[2])
-    if (isNaN(amount) || amount <= 0) {
+    const amount = Number(input[2])
+    if (!/^\d+$/.test(input[2]) || !Number.isSafeInteger(amount) || amount <= 0) {
       write('amount must be a positive integer, in sats (1 bitcoin = 100,000,000 sats)\n')
       continue
     }
 
     try {
-      const txinfo = node.send(toPublicKey, amount)
+      const txinfo = node.send(hexBytes(input[1]), amount)
       write(`sent transaction: ${hex(txinfo.tx.id)}, fees: ${txinfo.fees} sats\n`)
     } catch (e: any) {
       write(`failed to send transaction: ${e.message}\n`)
@@ -113,41 +109,36 @@ while (true) {
     continue
   }
 
-  if (input[0] === 'mine') {
-    const start = Date.now()
-    const block = await node.mineAsync(new Uint8Array(Buffer.from(input.slice(1).join(' ')))).catch(() => null)
-    const cost = Date.now() - start
-
-    if (block == null) {
-      console.log('mine cancelled')
-      continue
-    }
-
-    write(`cost: ${cost}ms\n`)
-    write(`new block: ${hex(block.hash())}\n${JSON.stringify(block.display(), null, 2)}\n`)
-    continue
-  }
-
-  if (input[0] === 'mineasync') {
-    const block = node.submitMine(new Uint8Array(Buffer.from(input.slice(1).join(' ')))).getBlock()
-    write(`new block: ${hex(block.hash())}\n${JSON.stringify(block.display(), null, 2)}\n`)
+  if (input[0] === 'mine' || input[0] === 'mineasync') {
+    pendingMine = mine(input.slice(1).join(' ')).catch(error => write(`mining failed: ${error.message}\n`))
+    if (input[0] === 'mine') await pendingMine
     continue
   }
 
   if (input[0] === 'mineloop') {
-    stoploop = false
-    mineloop(input.slice(1).join(' '))
+    if (!miningLoop) {
+      stoploop = false
+      miningLoop = mineloop(input.slice(1).join(' '))
+        .catch(error => write(`mining failed: ${error.message}\n`))
+        .finally(() => { miningLoop = undefined })
+    }
     continue
   }
 
   if (input[0] === 'stoploop') {
-    stoploop = true
+    if (miningLoop) {
+      stoploop = true
+      node.cancelMining()
+      await miningLoop
+      write('mineloop stopped\n')
+    }
     continue
   }
 
   if (input[0] === 'peer') {
-    if (input[1] === undefined) {
-      write('usage: peer <address>\n')
+    const address = input[1] === 'add' ? input[2] : input[1]
+    if (!address) {
+      write('usage: peer add <address> | peer list\n')
       continue
     }
 
@@ -161,10 +152,10 @@ while (true) {
       continue
     }
 
-    if (await node.addPeer(input[1])) {
-      write(`added peer: ${input[1]}\n`)
+    if (await node.addPeer(address)) {
+      write(`added peer: ${address}\n`)
     } else {
-      write(`failed to add peer: ${input[1]}\n`)
+      write(`failed to add peer: ${address}\n`)
     }
 
     continue
@@ -224,30 +215,6 @@ while (true) {
     continue
   }
 
-  /**
-   * unspent <publicKey>
-   */
-  if (input[0] == 'unspent') {
-    const specified = input[1]
-    if (specified) {
-      const unspent = node.getUnspentOutputs(hexBytes(specified))
-      if (unspent.length === 0) {
-        write('no unspent outputs\n')
-        continue
-      }
-      write(`unspent outputs:\n${unspent.map((u, i) => i + ': ' + JSON.stringify(u.display(), null, 2)).join('\n')}\n`)
-      continue
-    }
-
-    const unspent = node.getUnspentOutputs()
-    if (unspent.length === 0) {
-      write('no unspent outputs\n')
-      continue
-    }
-    write(`unspent outputs:\n${unspent.map((u, i) => i + ': ' + JSON.stringify(u.display(), null, 2)).join('\n')}\n`)
-    continue
-  }
-
   if (input.length === 0) {
     continue
   }
@@ -255,5 +222,8 @@ while (true) {
   write(`unknown command: ${input[0]}\n`)
 }
 
+stoploop = true
+node.stop()
+lines.close()
+await Promise.all([miningLoop, pendingMine])
 write('bye\n')
-cleanup()

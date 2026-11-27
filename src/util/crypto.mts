@@ -10,7 +10,10 @@ export function utf8Bytes(data: string): Uint8Array {
 }
 
 export function hexBytes(data: string): Uint8Array {
-  return new Uint8Array(data.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)))
+  if (data.length % 2 !== 0 || !/^[0-9a-f]*$/i.test(data)) {
+    throw new Error('Invalid hexadecimal bytes')
+  }
+  return new Uint8Array(Buffer.from(data, 'hex'))
 }
 
 export function hex(data?: Uint8Array): string {
