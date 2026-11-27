@@ -15,7 +15,7 @@ export class Peer {
   constructor(
     public address: string,
     public ws: WebSocket,
-    private waitResponse: (id: number, callback: (message: Message) => void) => void
+    private waitResponse: (id: number, callback: (message: Message) => void) => () => void
   ) { }
 
   public createSession(message?: Message): Session {
@@ -41,14 +41,15 @@ export class Peer {
   private request(message: Message): Promise<Record<string, any>> {
     const id = this.syncId++
     const request = { ...message, id }
-    const promise = new Promise((resolve, reject) => {
-      this.waitResponse(id, resolve)
-      setTimeout(() => {
-        reject(new Error('Request timed out'))
-      }, 3000)
-    })
-
-    this.ws.send(JSON.stringify(request))
-    return promise.then((message) => (message as any)?.data ?? {}) as Promise<Record<string, any>>
+    let unregister: (() => void) | undefined
+    let timer: NodeJS.Timeout
+    return new Promise<Message>((resolve, reject) => {
+      unregister = this.waitResponse(id, resolve)
+      timer = setTimeout(() => reject(new Error('Request timed out')), 3000)
+      this.ws.send(JSON.stringify(request), error => { if (error) reject(error) })
+    }).finally(() => {
+      clearTimeout(timer)
+      unregister?.()
+    }).then(reply => reply.data ?? {})
   }
 }

@@ -1,4 +1,5 @@
-import { Transaction } from "../../domain/transaction/transaction.mts"
+import { MAX_PENDING_TRANSACTIONS } from "../../app/config.mts"
+import { Transaction, TxIn } from "../../domain/transaction/transaction.mts"
 import { UTxOut } from "../../domain/transaction/utxo.mts"
 import { hex } from "../../util/crypto.mts"
 
@@ -13,6 +14,10 @@ export class TransactionPool {
 
   // key: txid + '-' + outputIndex
   private pendingUTxOuts: Set<string> = new Set()
+
+  public get full() {
+    return this.txs.size >= MAX_PENDING_TRANSACTIONS
+  }
 
   public get(txid: string): PendingTransaction | undefined {
     return this.txs.get(txid)
@@ -40,7 +45,7 @@ export class TransactionPool {
     this.txs.delete(txid)
   }
 
-  public has(txid: string | UTxOut): boolean {
+  public has(txid: string | UTxOut | TxIn): boolean {
     if (typeof txid === 'string') {
       return this.txs.has(txid)
     }

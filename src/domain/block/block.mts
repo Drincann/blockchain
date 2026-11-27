@@ -51,7 +51,15 @@ export class Block {
     return typeof hash === 'string' && typeof height === 'number'
   }
 
-  public next: Block | null = null
+  private successor: Block | (() => Block | null) | null = null
+
+  public get next(): Block | null {
+    return typeof this.successor === 'function' ? this.successor() : this.successor
+  }
+
+  public set next(block: Block | null) {
+    this.successor = block
+  }
 
   public static readonly GENESIS_BLOCK: Uint8Array = Block.serialize({
     height: 0,
@@ -175,8 +183,8 @@ export class Block {
     return [...bitString(this.hash()).slice(0, this.block.difficulty)].every(b => b === '0')
   }
 
-  public connect(next: Block) {
-    this.next = next
+  public connect(next: Block | (() => Block | null)) {
+    this.successor = next
   }
 
   public static medianTimePast(recentTimestamps: number[]): number {

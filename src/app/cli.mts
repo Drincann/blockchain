@@ -1,10 +1,12 @@
 import { createInterface } from 'node:readline'
 import { Account } from '../domain/transaction/account.mts'
-import { Node } from '../infra/node/node.mts'
+import { startNode } from './startup.mts'
 import { hex, hexBytes } from '../util/crypto.mts'
 
-const node = new Node()
-node.start(parseInt(process.argv[2] || '3001'))
+const node = await startNode(process.argv.slice(2)).catch(error => {
+  console.error(error.message)
+  process.exit(1)
+})
 
 
 const write = (chars: string) => {
@@ -68,12 +70,19 @@ while (true) {
         const balance = node.getBalance(key)
         write(`balance: ${balance} sats (${balance / 100_000_000} bitcoin)\n`)
       } else {
-        const unspent = node.getUnspentOutputs(key)
+        const page = Number(input[2] ?? 1)
+        if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(page * 100)) {
+          write('usage: unspent [publicKey] [page]\n')
+          continue
+        }
+        const offset = (page - 1) * 100
+        const unspent = node.getUnspentOutputs(key, 101, offset)
         if (unspent.length === 0) {
           write('no unspent outputs\n')
         } else {
-          write(`unspent outputs:\n${unspent.map((u, i) => i + ': ' + JSON.stringify(u.display(), null, 2)).join('\n')}\n`)
+          write(`unspent outputs:\n${unspent.slice(0, 100).map((u, i) => (offset + i) + ': ' + JSON.stringify(u.display(), null, 2)).join('\n')}\n`)
         }
+        if (unspent.length > 100) write(`more: unspent ${input[1] ?? hex(node.account.publicKey)} ${page + 1}\n`)
       }
     } catch (e) {
       write(`invalid public key: ${(e as Error).message}\n`)

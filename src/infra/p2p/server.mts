@@ -161,7 +161,10 @@ export class Server {
     try {
       const pendingRequests: Record<number, (message: Message) => void> = {}
 
-      const peer = new Peer(address, ws, (syncId, callback) => { pendingRequests[syncId] = callback })
+      const peer = new Peer(address, ws, (syncId, callback) => {
+        pendingRequests[syncId] = callback
+        return () => { delete pendingRequests[syncId] }
+      })
 
       this.peers.push(peer)
       ws.on('message', async (data: Buffer) => {
@@ -169,7 +172,6 @@ export class Server {
           const message = JSON.parse(data.toString()) as Message
           if (message.type === 'response' && message.id !== undefined) {
             const callback = pendingRequests[message.id]
-            delete pendingRequests[message.id]
             callback?.(message)
             return
           }

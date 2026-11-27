@@ -4,6 +4,8 @@ const jsonConfig = JSON.parse(
   await readFile(new URL('./config.json', import.meta.url), 'utf-8') ?? '{}'
 )
 
+export const SYNC_BATCH_SIZE = 64
+export const MAX_PENDING_TRANSACTIONS = 1024
 export const MAX_BLOCK_TX_BYTES = 10240
 export const COINBASE_REWARD = 5_000_000_000
 export const REWARD_HALVING_EVERY_BLOCKS = 210_000

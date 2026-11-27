@@ -455,9 +455,7 @@ describe('Blockchain Node Sync Tests', () => {
       await mine(nodeA, 'initial block to fund sender')
 
       // get available UTXOs
-      const availableUTxOs = nodeA['uTxOuts']['filter'](
-        (utxo: any) => Buffer.from(utxo.output.publicKey).equals(Buffer.from(sender.publicKey))
-      )
+      const availableUTxOs = nodeA.getUnspentOutputs(sender.publicKey)
       assert.ok(availableUTxOs.length > 0, 'Should have available UTXOs')
 
       const utxoToSpend = availableUTxOs[0]
@@ -490,8 +488,7 @@ describe('Blockchain Node Sync Tests', () => {
 
       // try to add second transaction to transaction pool (should be detected as double spending)
       const isDoubleSpend = tx2.inputs.some(input => {
-        const inputUtxo = nodeA['uTxOuts'].get(input)
-        return nodeA['transactionPool'].has(inputUtxo!)
+        return nodeA['transactionPool'].has(input)
       })
 
       assert.ok(isDoubleSpend, 'Should detect double spending attempt in transaction pool')
@@ -530,9 +527,7 @@ describe('Blockchain Node Sync Tests', () => {
       assert.equal(getBlockchainLength(nodeB), 2, 'Node B should have synced the initial block')
 
       // get available UTXOs
-      const availableUTxOs = nodeA['uTxOuts']['filter'](
-        (utxo: any) => Buffer.from(utxo.output.publicKey).equals(Buffer.from(sender.publicKey))
-      )
+      const availableUTxOs = nodeA.getUnspentOutputs(sender.publicKey)
       assert.ok(availableUTxOs.length > 0, 'Should have available UTXOs')
 
       const utxoToSpend = availableUTxOs[0]
