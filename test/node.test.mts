@@ -1,3 +1,4 @@
+import { ECDH } from 'node:crypto'
 import { describe, it, beforeEach, afterEach } from "node:test"
 import assert from 'node:assert/strict'
 import { Node } from '../src/infra/node/node.mts'
@@ -14,6 +15,14 @@ function createTestNode(port: number): Node {
 
 function waitForSync(delay: number = 200): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, delay))
+}
+
+async function waitUntil(ready: () => boolean) {
+  const deadline = Date.now() + 3000
+  while (!ready()) {
+    assert.ok(Date.now() < deadline, 'Timed out waiting for the nodes')
+    await waitForSync(10)
+  }
 }
 
 function getBlockchainLength(node: Node): number {
@@ -307,6 +316,90 @@ describe('Blockchain Node Sync Tests', () => {
       const nodeAHashes = getBlockchainHashes(nodeA)
       const nodeBHashes = getBlockchainHashes(nodeB)
       assert.deepStrictEqual(nodeBHashes, nodeAHashes, 'Both nodes\' blockchains should be identical')
+    })
+  })
+
+  describe('Ledger and peer synchronization', () => {
+    it('preserves shared payments and rewards when switching forks', async () => {
+      const sender = nodeA.account.publicKey
+      const receiver = nodeB.account.publicKey
+      await mine(nodeA, 'fund sender')
+      nodeA.send(receiver, 40_000)
+      await mine(nodeA, 'shared payment')
+
+      await nodeB.addPeer(`localhost:${portA}`)
+      await waitUntil(() => nodeB.current.equals(nodeA.current))
+      nodeB['server']['peers'][0].ws.close()
+      await waitUntil(() => nodeA.peer().length === 0 && nodeB.peer().length === 0)
+
+      nodeA.importAccount(new Account())
+      const abandoned = await mine(nodeA, 'short fork')
+      const recipient = new Account()
+      nodeB.send(recipient.publicKey, 1000)
+      await mine(nodeB, 'spend shared payment')
+      await mine(nodeB, 'longer fork')
+
+      await nodeA.addPeer(`localhost:${portB}`)
+      await waitUntil(() => nodeA.current.equals(nodeB.current))
+      assert.equal(nodeA.block(hex(abandoned.hash())), undefined)
+      assert.equal(nodeA.getBalance(), 0)
+      assert.equal(nodeA.getBalance(recipient.publicKey), 1000)
+      for (const key of [sender, receiver]) {
+        assert.deepEqual(nodeA.getUnspentOutputs(key), nodeB.getUnspentOutputs(key))
+      }
+    })
+
+    it('keeps its own tip at equal work and follows the next block', async () => {
+      const first = await mine(nodeA, 'first branch')
+      const second = await mine(nodeB, 'second branch')
+      await nodeA.addPeer(`localhost:${portB}`)
+      await waitForSync()
+      assert.ok(nodeA.current.equals(first))
+      assert.ok(nodeB.current.equals(second))
+
+      const next = await mine(nodeB, 'longer branch')
+      await waitUntil(() => nodeA.current.equals(next))
+    })
+
+    it('accepts pending payments announced while catching up on blocks', async () => {
+      for (let i = 0; i < 3; i++) await mine(nodeA, 'history')
+      const { tx } = nodeA.send(nodeB.account.publicKey, 1000)
+      const id = hex(tx.id)
+
+      await nodeB.addPeer(`localhost:${portA}`)
+      await waitUntil(() => !!nodeB.transaction(id))
+      const block = await mine(nodeB, 'confirm payment')
+      assert.equal(hex(block.transactions[0].id), id)
+      await waitUntil(() => nodeA.current.equals(block))
+    })
+
+    it('confirms a payment to a compressed public key', async () => {
+      const compressed = ECDH.convertKey(nodeB.account.publicKey, 'secp256k1', undefined, undefined, 'compressed') as Buffer
+      await mine(nodeA, 'fund sender')
+      const { tx } = nodeA.send(compressed, 1000)
+      const block = await mine(nodeA, 'confirm')
+      assert.ok(nodeA.current.equals(block))
+      assert.equal(hex(block.transactions[0].id), hex(tx.id))
+      assert.equal(nodeA.getBalance(compressed), 1000)
+      assert.equal(nodeA.getBalance(nodeB.account.publicKey), 1000)
+    })
+
+    it('charges the fee of the final transaction and can spend without change', async () => {
+      await mine(nodeA, 'first reward')
+      const reward = nodeA.getBalance()
+      await mine(nodeA, 'second reward')
+      const { tx, fees } = nodeA.send(nodeB.account.publicKey, reward)
+      assert.equal(fees, tx.bytesLength())
+      assert.equal(fees, 2 * reward - tx.outputValue)
+      await mine(nodeA, 'confirm')
+
+      const largest = Math.max(...nodeA.getUnspentOutputs().map(utxo => utxo.output.amount))
+      const recipient = new Account()
+      const payment = nodeA.send(recipient.publicKey, largest - 189)
+      assert.equal(payment.fees, 189)
+      assert.equal(payment.tx.outputs.length, 1)
+      await mine(nodeA, 'confirm exact fee')
+      assert.equal(nodeA.getBalance(recipient.publicKey), largest - 189)
     })
   })
 
