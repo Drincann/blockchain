@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
-import Database from 'better-sqlite3'
+import type BetterSQLite from 'better-sqlite3'
+import Database from './sqlite.mts'
 import { Block } from '../../domain/block/block.mts'
 import { Transaction, TxIn, TxOut } from '../../domain/transaction/transaction.mts'
 import { UTxOut } from '../../domain/transaction/utxo.mts'
@@ -46,8 +47,8 @@ const selectOutput = 'SELECT o.txid, o.idx, b.hash, o.amount, o.owner FROM outpu
 
 /** Canonical history and its indexes share a transaction. The temporary branch belongs to this connection. */
 export class BlockStorage {
-  private db: Database.Database
-  private statements = new Map<string, Database.Statement>()
+  private db: BetterSQLite.Database
+  private statements = new Map<string, BetterSQLite.Statement>()
 
   constructor(filename: string = ':memory:') {
     const existing = filename !== ':memory:' && existsSync(filename)
@@ -79,7 +80,7 @@ export class BlockStorage {
     }
   }
 
-  private sql(query: string): Database.Statement {
+  private sql(query: string): BetterSQLite.Statement {
     let statement = this.statements.get(query)
     if (!statement) {
       statement = this.db.prepare(query)
@@ -138,7 +139,7 @@ export class BlockStorage {
   }
 
   append(block: Block, work: bigint) {
-    this.sql('INSERT INTO blocks VALUES (?, ?, ?, ?, ?)').run(block.height, hex(block.hash()), block.serialize(), block.ts, work.toString())
+    this.sql('INSERT INTO blocks VALUES (?, ?, ?, ?, ?)').run(block.height, hex(block.hash()), Buffer.from(block.serialize()), block.ts, work.toString())
   }
 
   rewind(height: number) {
@@ -160,7 +161,7 @@ export class BlockStorage {
   addOutputs(tx: Transaction, height: number) {
     const id = hex(tx.id)
     const insert = this.sql('INSERT INTO outputs(txid, idx, height, amount, owner) VALUES (?, ?, ?, ?, ?)')
-    tx.outputs.forEach((output, index) => insert.run(id, index, height, output.amount, output.publicKey))
+    tx.outputs.forEach((output, index) => insert.run(id, index, height, output.amount, Buffer.from(output.publicKey)))
   }
 
   spend(input: TxIn, height: number) {
@@ -174,16 +175,16 @@ export class BlockStorage {
   }
 
   *coins(owner: Uint8Array, limit = -1, offset = 0): IterableIterator<UTxOut> {
-    const rows = this.sql(selectOutput + ' WHERE o.owner = ? AND o.spent_at IS NULL ORDER BY o.amount DESC, o.txid, o.idx LIMIT ? OFFSET ?').iterate(owner, limit, offset)
+    const rows = this.sql(selectOutput + ' WHERE o.owner = ? AND o.spent_at IS NULL ORDER BY o.amount DESC, o.txid, o.idx LIMIT ? OFFSET ?').iterate(Buffer.from(owner), limit, offset)
     for (const row of rows) yield unspent(row as OutputRow)
   }
 
   balance(owner: Uint8Array): number {
-    return this.sql('SELECT COALESCE(SUM(amount), 0) FROM outputs WHERE owner = ? AND spent_at IS NULL').pluck().get(owner) as number
+    return this.sql('SELECT COALESCE(SUM(amount), 0) FROM outputs WHERE owner = ? AND spent_at IS NULL').pluck().get(Buffer.from(owner)) as number
   }
 
   savePending(tx: Transaction) {
-    this.sql('INSERT INTO outbox VALUES (?, ?)').run(hex(tx.id), tx.serialize())
+    this.sql('INSERT INTO outbox VALUES (?, ?)').run(hex(tx.id), Buffer.from(tx.serialize()))
   }
 
   pending(): Transaction[] {
@@ -196,7 +197,7 @@ export class BlockStorage {
   }
 
   stage(block: Block) {
-    this.sql('INSERT INTO incoming VALUES (?, ?)').run(block.height, block.serialize())
+    this.sql('INSERT INTO incoming VALUES (?, ?)').run(block.height, Buffer.from(block.serialize()))
   }
 
   staged(height: number): Block {

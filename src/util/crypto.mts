@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes as nodeRandomBytes, randomUUID } from "node:crypto";
 export function sha256(data: Uint8Array): Uint8Array {
   return new Uint8Array(createHash('sha256').update(data).digest())
 }
@@ -28,7 +28,7 @@ export function uuid(): string {
 }
 
 export function randomBytes(length: number): Uint8Array {
-  return new Uint8Array(crypto.getRandomValues(new Uint8Array(length)))
+  return new Uint8Array(nodeRandomBytes(length))
 }
 
 export function bitString(bytes: Uint8Array): string {

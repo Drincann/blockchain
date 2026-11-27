@@ -68,29 +68,27 @@ describe('Blockchain Node Sync Tests', () => {
   let portA: number
   let portB: number
 
-  beforeEach(async () => {
-    // Create new node instances before each test
-    portA = 3000 + Math.floor(Math.random() * 1000)
-    portB = portA + 1
+  function nodeSuite(name: string, tests: () => void) {
+    describe(name, () => {
+      beforeEach(async () => {
+        nodeA = createTestNode(0)
+        nodeB = createTestNode(0)
+        await waitUntil(() => !!nodeA['server']!['wss'].address() && !!nodeB['server']!['wss'].address())
+        const a = nodeA['server']!['wss'].address()
+        const b = nodeB['server']!['wss'].address()
+        assert.ok(a && typeof a !== 'string' && b && typeof b !== 'string')
+        portA = a.port
+        portB = b.port
+      })
+      afterEach(() => {
+        nodeA?.stop()
+        nodeB?.stop()
+      })
+      tests()
+    })
+  }
 
-    nodeA = createTestNode(portA)
-    nodeB = createTestNode(portB)
-
-    // Wait for nodes to start
-    await waitForSync(100)
-  })
-
-  afterEach(async () => {
-    // Clean up all nodes
-    if (nodeA) {
-      nodeA.stop()
-    }
-    if (nodeB) {
-      nodeB.stop()
-    }
-  })
-
-  describe('Test 1: Node A mines a block, Node B connects and syncs successfully', () => {
+  nodeSuite('Test 1: Node A mines a block, Node B connects and syncs successfully', () => {
     it('should sync one block', async () => {
       // Node A mines a block
       const minedBlock = await mine(nodeA, 'test block 1')
@@ -119,7 +117,7 @@ describe('Blockchain Node Sync Tests', () => {
     })
   })
 
-  describe('Test 2: Node A mines three blocks, Node B connects and syncs successfully', () => {
+  nodeSuite('Test 2: Node A mines three blocks, Node B connects and syncs successfully', () => {
     it('should sync three blocks', async () => {
       // Node A mines three blocks
       const blocks: Block[] = []
@@ -153,7 +151,7 @@ describe('Blockchain Node Sync Tests', () => {
     })
   })
 
-  describe('Test 3: Node A mines a block, Node A connects to B and B syncs automatically', () => {
+  nodeSuite('Test 3: Node A mines a block, Node A connects to B and B syncs automatically', () => {
     it('should sync from Node A to Node B', async () => {
       // Node A mines a block
       const minedBlock = await mine(nodeA, 'test block from A')
@@ -175,7 +173,7 @@ describe('Blockchain Node Sync Tests', () => {
     })
   })
 
-  describe('Test 4: Node A mines three blocks, Node A connects to B and B syncs automatically', () => {
+  nodeSuite('Test 4: Node A mines three blocks, Node A connects to B and B syncs automatically', () => {
     it('should sync three blocks from Node A to Node B', async () => {
       // Node A mines three blocks
       const blocks: Block[] = []
@@ -202,7 +200,7 @@ describe('Blockchain Node Sync Tests', () => {
     })
   })
 
-  describe('Test 5: Bidirectional mining and sync test', () => {
+  nodeSuite('Test 5: Bidirectional mining and sync test', () => {
     it('should support bidirectional mining and automatic sync', async () => {
       // Connect the two nodes first
       const connected = await nodeA.addPeer(`localhost:${portB}`)
@@ -239,7 +237,7 @@ describe('Blockchain Node Sync Tests', () => {
     })
   })
 
-  describe('Test 6: Fork handling and chain replacement - A connects to B', () => {
+  nodeSuite('Test 6: Fork handling and chain replacement - A connects to B', () => {
     it('should replace shorter chain with longer chain', async () => {
       // Node A mines two blocks
       const blocksA: Block[] = []
@@ -279,7 +277,7 @@ describe('Blockchain Node Sync Tests', () => {
     })
   })
 
-  describe('Test 7: Fork handling and chain replacement - B connects to A', () => {
+  nodeSuite('Test 7: Fork handling and chain replacement - B connects to A', () => {
     it('should replace shorter chain with longer chain', async () => {
       // Node A mines two blocks
       const blocksA: Block[] = []
@@ -319,7 +317,7 @@ describe('Blockchain Node Sync Tests', () => {
     })
   })
 
-  describe('Ledger and peer synchronization', () => {
+  nodeSuite('Ledger and peer synchronization', () => {
     it('preserves shared payments and rewards when switching forks', async () => {
       const sender = nodeA.account.publicKey
       const receiver = nodeB.account.publicKey
@@ -329,7 +327,7 @@ describe('Blockchain Node Sync Tests', () => {
 
       await nodeB.addPeer(`localhost:${portA}`)
       await waitUntil(() => nodeB.current.equals(nodeA.current))
-      nodeB['server']['peers'][0].ws.close()
+      nodeB['server']!['peers'][0].ws.close()
       await waitUntil(() => nodeA.peer().length === 0 && nodeB.peer().length === 0)
 
       nodeA.importAccount(new Account())
@@ -403,7 +401,7 @@ describe('Blockchain Node Sync Tests', () => {
     })
   })
 
-  describe('Edge case tests', () => {
+  nodeSuite('Edge case tests', () => {
     it('should handle empty data blocks', async () => {
       // Node A mines an empty data block
       const emptyBlock = await mine(nodeA, '')
@@ -422,7 +420,7 @@ describe('Blockchain Node Sync Tests', () => {
     })
   })
 
-  describe('Transaction validation tests', () => {
+  nodeSuite('Transaction validation tests', () => {
     it('double spending prevention', async () => {
       const sender = new Account()
       const receiver = new Account()
@@ -541,7 +539,7 @@ describe('Blockchain Node Sync Tests', () => {
 
       // add first transaction to transaction pool and broadcast
       nodeA['transactionPool'].add({ tx: tx1, fees: 100_000 })
-      nodeA['server'].broadcast({ type: 'txinv', data: { txids: [hex(tx1.id)] } })
+      nodeA['server']!.broadcast({ type: 'txinv', data: { txids: [hex(tx1.id)] } })
 
       await waitForSync(500)
 

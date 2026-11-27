@@ -12,7 +12,7 @@ import { Node } from '../../src/infra/node/node.mts'
 import { BlockStorage } from '../../src/infra/persistence/storage.mts'
 import { BLOCK_GENERATION_TARGET_IN_MILLS, COINBASE_REWARD } from '../../src/app/config.mts'
 
-const childScript = fileURLToPath(new URL('../fixtures/sync-memory.mts', import.meta.url))
+const childScript = fileURLToPath(new URL('../fixtures/sync-memory.mjs', import.meta.url))
 
 // Space out timestamps by the target interval to keep proof generation cheap and reproducible.
 function extendFixture(filename: string, owner: Uint8Array, height: number) {
@@ -59,7 +59,7 @@ it('syncs ten times more blocks in a fresh receiver with bounded peak memory', {
         const address = source['server']!['wss'].address()
         assert.ok(address && typeof address !== 'string')
         const { stdout } = await promisify(execFile)(process.execPath, [
-          '--max-old-space-size=96', '--import', 'tsx', childScript,
+          '--max-old-space-size=96', childScript,
           join(root, 'receiver-' + height), String(address.port), String(height), source.current.summary.hash
         ], { timeout: 150_000 })
         const peak = Number(/peakKiB=(\d+)/.exec(stdout)?.[1])

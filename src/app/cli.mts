@@ -6,7 +6,7 @@ import { hex, hexBytes } from '../util/crypto.mts'
 
 const args = process.argv.slice(2)
 if (args.includes('--help') || args.includes('-h')) {
-  process.stdout.write('Usage: pnpm start [port] [--data-dir DIRECTORY] [--reindex] [--memory]\n\n' + help)
+  process.stdout.write('Usage: npm start -- [port] [--data-dir DIRECTORY] [--reindex] [--memory]\n\n' + help)
   process.exit(0)
 }
 
