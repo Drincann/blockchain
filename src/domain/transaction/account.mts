@@ -1,5 +1,5 @@
 import { createHash, ECDH } from 'node:crypto'
-import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { secp256k1 } from '@noble/curves/secp256k1'
 import { Transaction } from './transaction.mts'
 
 function signingDigest(data: Uint8Array | Transaction): Uint8Array {
@@ -38,7 +38,7 @@ export class Account {
   }
 
   public sign(data: Uint8Array | Transaction): Uint8Array {
-    return secp256k1.sign(signingDigest(data), this.secret, { prehash: false, format: 'der', extraEntropy: true })
+    return secp256k1.sign(signingDigest(data), this.secret, { prehash: false, lowS: true, extraEntropy: true }).toDERRawBytes()
   }
 
   public signTxIn(tx: Transaction, inputIndex: number): Account {

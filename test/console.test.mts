@@ -3,13 +3,9 @@ import assert from 'node:assert/strict'
 import { PassThrough, Writable } from 'node:stream'
 import { commandReader } from '../src/app/console.mts'
 
-it('edits recalled commands with Up and Down and skips key imports', t => {
+it('edits recalled commands with Up and Down and skips key imports', () => {
   const term = process.env.TERM
   process.env.TERM = 'xterm-256color'
-  t.after(() => {
-    if (term === undefined) delete process.env.TERM
-    else process.env.TERM = term
-  })
   const input = new PassThrough()
   const output = new Writable({ write(_chunk, _encoding, done) { done() } })
   const reader = commandReader(input, output, true)
@@ -25,6 +21,8 @@ it('edits recalled commands with Up and Down and skips key imports', t => {
     input.write('\x1b[A edited\r')
     assert.equal(seen.at(-1), 'peer list edited')
   } finally {
+    if (term === undefined) delete process.env.TERM
+    else process.env.TERM = term
     reader.close()
     input.destroy()
     output.destroy()

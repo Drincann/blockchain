@@ -1,7 +1,7 @@
 import { parseArgs } from 'node:util'
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { createInterface } from 'node:readline/promises'
+import { createInterface } from 'node:readline'
 import { Writable } from 'node:stream'
 import { Node } from '../infra/node/node.mts'
 
@@ -11,12 +11,20 @@ async function walletPassphrase(dataDir: string): Promise<string> {
   if (!process.stdin.isTTY) throw new Error('Set BLOCKCHAIN_WALLET_PASSPHRASE for a non-interactive node')
   const muted = new Writable({ write(_chunk, _encoding, done) { done() } })
   const input = createInterface({ input: process.stdin, output: muted, terminal: true })
+  const question = () => new Promise<string>((resolve, reject) => {
+    const cancelled = () => reject(new Error('Wallet unlock cancelled'))
+    input.once('close', cancelled)
+    input.question('', answer => {
+      input.off('close', cancelled)
+      resolve(answer)
+    })
+  })
   try {
     process.stderr.write('Wallet passphrase (hidden): ')
-    const passphrase = await input.question('')
+    const passphrase = await question()
     if (!existsSync(join(dataDir, 'wallet.json'))) {
       process.stderr.write('\nConfirm new wallet passphrase: ')
-      if (await input.question('') !== passphrase) throw new Error('Wallet passphrases do not match')
+      if (await question() !== passphrase) throw new Error('Wallet passphrases do not match')
     }
     return passphrase
   } finally {
@@ -32,7 +40,7 @@ export async function startNode(args: string[]): Promise<Node> {
   })
   const port = Number(positionals[0] ?? 3001)
   if (positionals.length > 1 || !Number.isInteger(port) || port < 0 || port > 65535) {
-    throw new Error('Usage: pnpm start [port] [--data-dir DIRECTORY] [--reindex] | [--memory]')
+    throw new Error('Usage: npm start -- [port] [--data-dir DIRECTORY] [--reindex] | [--memory]')
   }
   if (values.memory && (values['data-dir'] || values.reindex)) throw new Error('Choose a data directory or --memory')
   const dataDir = resolve(values['data-dir'] ?? `.blockchain/node-${port}`)

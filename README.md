@@ -6,15 +6,15 @@ This project is a tiny proof-of-work blockchain that you can run locally to see 
 
 ## Dependencies
 
-- [Node.js](https://nodejs.org/) v22 or newer
-- [pnpm](https://pnpm.io/)
+- [Node.js](https://nodejs.org/) 22 or newer, or 16.20.2 on legacy systems.
+- [pnpm](https://pnpm.io/) 8.15.9 (the version used by the lockfile).
 
 ## Quick start
 
 1. Install dependencies
 
    ```bash
-   pnpm install --frozen-lockfile
+   npx --yes pnpm@8.15.9 install --frozen-lockfile
    ```
 
 2. **(Optional) Tell other nodes how to reach you**
@@ -23,28 +23,40 @@ This project is a tiny proof-of-work blockchain that you can run locally to see 
 3. Launch a node (default port is 3001)
 
    ```bash
-   pnpm start [port]
+   npm start
    ```
 
 4. Enter a wallet passphrase when prompted. The first run creates a wallet. Use the same passphrase and data directory on later runs to unlock it. Then use the interactive prompt to mine or send coins.
+
+## Ubuntu 18.04 x86-64
+
+With Node 16.20.2 already installed through fnm, run these commands from the checkout:
+
+```bash
+fnm use 16.20.2
+npx --yes pnpm@8.15.9 install --frozen-lockfile
+npm start -- 3001
+```
+
+The installer selects a Node 16 SQLite binding with a published Linux x64 binary compatible with glibc 2.27. The first install fetches packages from the npm registry and the SQLite binary from GitHub. Keep optional dependencies and install scripts enabled. Node 22+ uses the current SQLite binding. Reinstall dependencies after changing Node majors. Both use the same database and encrypted-wallet formats, so start with the same data directory and passphrase.
 
 ## Local storage and recovery
 
 By default, each port uses its own directory under `.blockchain/` in the current working directory (for example, `.blockchain/node-3001`). To use an explicit location, including after changing ports:
 
 ```bash
-pnpm start 3001 --data-dir ./alice-node
+npm start -- 3001 --data-dir ./alice-node
 ```
 
 - `chain.sqlite` stores the accepted blocks, transaction index, spendable outputs and your wallet's pending sends. A block or fork switch commits atomically before the node announces its new tip. Restarting works offline. History stays on disk, and catch-up downloads up to 64 blocks per request into temporary storage.
 - `wallet.json` holds the active private key encrypted with your passphrase (scrypt and AES-256-GCM). Back up the directory after quitting with `q`. Restore it to a private local directory, then start with `--data-dir` and the original passphrase. Losing both the usable wallet and a private-key backup loses access to the coins. Before replacing a wallet with `importprivatekey`, back up the old key. Keep custom data directories outside version control.
-- Only one node can open a data directory at a time. For unattended use, supply the passphrase through the `BLOCKCHAIN_WALLET_PASSPHRASE` environment variable. For a disposable session that leaves no wallet or ledger on disk, use `pnpm start 3001 --memory`.
-- To verify the stored blocks and rebuild their transaction and spendable-output indexes, stop the node and run `pnpm start 3001 --data-dir ./alice-node --reindex`. A failed rebuild rolls back. To recover an unreadable database, restore a backup. A wallet alone can also be placed in a fresh directory and its confirmed history synced from a peer.
+- Only one node can open a data directory at a time. For unattended use, supply the passphrase through the `BLOCKCHAIN_WALLET_PASSPHRASE` environment variable. For a disposable session that leaves no wallet or ledger on disk, use `npm start -- 3001 --memory`.
+- To verify the stored blocks and rebuild their transaction and spendable-output indexes, stop the node and run `npm start -- 3001 --data-dir ./alice-node --reindex`. A failed rebuild rolls back. To recover an unreadable database, restore a backup. A wallet alone can also be placed in a fresh directory and its confirmed history synced from a peer.
 - Older versions kept data only in the running process. To carry over that wallet, save its private key from the old node's `account` command, then use `importprivatekey` on the new node. For an existing chain, leave a peer with the old history running until the new node has synced. Previously stopped nodes have no local chain to migrate.
 
 ## Commands
 
-Type `help` at the prompt, or run `pnpm start --help` before opening a wallet. In a terminal, use ↑ and ↓ to recall and edit commands from this session. Private-key import commands are excluded from history.
+Type `help` at the prompt, or run `npm start -- --help` before opening a wallet. In a terminal, use ↑ and ↓ to recall and edit commands from this session. Private-key import commands are excluded from history.
 
 > required arguments: `<arg1>`; optional arguments: `[arg1]`
 
@@ -73,8 +85,8 @@ Type `help` at the prompt, or run `pnpm start --help` before opening a wallet. I
 Open two terminals and start nodes on different ports, for example:
 
 ```bash
-pnpm start 3001
-pnpm start 3002
+npm start -- 3001
+npm start -- 3002
 ```
 
 In one CLI, add the other as a peer:
@@ -90,9 +102,9 @@ Both nodes will now share newly mined blocks and broadcast transactions to each 
 Run the test suite:
 
 ```bash
-pnpm test
+npm test
 ```
 
-Run `pnpm test:scale` to compare peak receiver memory while syncing generated histories of 1,000 and 10,000 reward-only blocks in separate processes.
+Run `npm run test:scale` to compare peak receiver memory while syncing generated histories of 1,000 and 10,000 reward-only blocks in separate processes.
 
-Run `pnpm test:network` for the local partition-and-recovery test. It uses 32 temporary node directories and 1,024 signed payments in the shared history. It reconnects two competing branches, relays one more payment across the live network, and checks all wallet balances against an independent ledger after restart.
+Run `npm run test:network` for the local partition-and-recovery test. It uses 32 temporary node directories and 1,024 signed payments in the shared history. It reconnects two competing branches, relays one more payment across the live network, and checks all wallet balances against an independent ledger after restart.

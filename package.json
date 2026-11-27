@@ -3,11 +3,11 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "tsx --test test/*.test.mts",
-    "start": "tsx src/app/cli.mts",
+    "start": "tsc --noCheck && node dist/app/cli.mjs",
     "build": "tsc",
-    "test:scale": "tsx --test test/scale/long-chain.test.mts",
-    "test:network": "tsx --test test/scale/network-ledger.test.mts"
+    "test": "tsc -p tsconfig.test.json && node --test .test-dist/test/*.test.mjs",
+    "test:scale": "tsc -p tsconfig.test.json && node --test .test-dist/test/scale/long-chain.test.mjs",
+    "test:network": "tsc -p tsconfig.test.json && node --test .test-dist/test/scale/network-ledger.test.mjs"
   },
   "type": "module",
   "keywords": [],
@@ -15,18 +15,21 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@noble/curves": "2.4.0",
-    "better-sqlite3": "13.2.0",
-    "tsx": "^4.19.4",
+    "@noble/curves": "1.9.7",
+    "typescript": "5.9.3",
     "ws": "^8.23.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^22.20.7",
-    "@types/ws": "^8.18.1",
-    "typescript": "5.9.3"
+    "@types/node": "^18.19.0",
+    "@types/ws": "^8.18.1"
   },
   "engines": {
-    "node": ">=22"
+    "node": "^16.20.2 || >=22"
+  },
+  "packageManager": "pnpm@8.15.9",
+  "optionalDependencies": {
+    "better-sqlite3": "13.2.0",
+    "blockchain-sqlite-node16": "file:compat/sqlite-node16"
   }
 }

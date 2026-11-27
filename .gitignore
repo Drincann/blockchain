@@ -6,3 +6,4 @@ dist/
 chain.sqlite*
 wallet.json
 wallet.json.*.tmp
+.test-dist/

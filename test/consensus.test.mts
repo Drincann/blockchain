@@ -152,13 +152,17 @@ it('consumes a confirmed payment input only once and keeps the confirmed balance
   }
 })
 
-it('can keep mining when the local clock is behind valid recent blocks', async t => {
+it('can keep mining when the local clock is behind valid recent blocks', async () => {
   const node = new Node()
   try {
     const localTime = Date.now()
-    const fastClock = t.mock.method(Date, 'now', () => localTime + 30_000)
-    for (let i = 0; i < 4; i++) assert.ok(await node.mineAsync())
-    fastClock.mock.restore()
+    const now = Date.now
+    Date.now = () => localTime + 30_000
+    try {
+      for (let i = 0; i < 4; i++) assert.ok(await node.mineAsync())
+    } finally {
+      Date.now = now
+    }
     const next = await node.mineAsync()
     assert.ok(next)
     assert.ok(next.ts >= localTime + 30_000)

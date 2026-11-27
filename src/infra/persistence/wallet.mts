@@ -54,7 +54,13 @@ export class WalletFile {
     const envelope = { version: 1, salt: this.salt.toString('hex'), iv: iv.toString('hex'), tag: cipher.getAuthTag().toString('hex'), data: data.toString('hex') }
     const temporary = this.filename + '.' + randomBytes(8).toString('hex') + '.tmp'
     try {
-      writeFileSync(temporary, JSON.stringify(envelope) + '\n', { mode: 0o600, flag: 'wx', flush: true })
+      const fd = openSync(temporary, 'wx', 0o600)
+      try {
+        writeFileSync(fd, JSON.stringify(envelope) + '\n')
+        fsyncSync(fd)
+      } finally {
+        closeSync(fd)
+      }
       renameSync(temporary, this.filename)
       this.account = account
       if (process.platform !== 'win32') {

@@ -1,30 +1,38 @@
-import Database from 'better-sqlite3'
+import Database from '../src/infra/persistence/sqlite.mts'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { it, type TestContext } from 'node:test'
+import { it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { Account } from '../src/domain/transaction/account.mts'
 import { Node } from '../src/infra/node/node.mts'
 import { hex } from '../src/util/crypto.mts'
 
-function fixture(t: TestContext) {
-  const root = mkdtempSync(join(tmpdir(), 'blockchain-test-'))
-  const nodes: Node[] = []
-  t.after(() => {
-    nodes.forEach(node => node.stop())
-    rmSync(root, { recursive: true, force: true })
-  })
-  function open(name: string, reindex = false) {
-    const node = new Node({ dataDir: join(root, name), passphrase: 'fixture passphrase', reindex })
-    nodes.push(node)
-    return node
+interface Fixture {
+  root: string
+  open: (name: string, reindex?: boolean) => Node
+}
+
+function withFixture(run: (fixture: Fixture) => void | Promise<void>) {
+  return async () => {
+    const root = mkdtempSync(join(tmpdir(), 'blockchain-test-'))
+    const nodes: Node[] = []
+    function open(name: string, reindex = false) {
+      const node = new Node({ dataDir: join(root, name), passphrase: 'fixture passphrase', reindex })
+      nodes.push(node)
+      return node
+    }
+    try {
+      await run({ root, open })
+    } finally {
+      nodes.forEach(node => node.stop())
+      rmSync(root, { recursive: true, force: true })
+    }
   }
-  return { root, open }
 }
 
 async function connect(node: Node, peer: Node) {
@@ -41,8 +49,7 @@ async function until(condition: () => boolean) {
   }
 }
 
-it('restores a confirmed payment, key and spendable balance offline', async t => {
-  const { open, root } = fixture(t)
+it('restores a confirmed payment, key and spendable balance offline', withFixture(async ({ open, root }) => {
   const a = open('a'), b = open('b')
   a.start(0)
   b.start(0)
@@ -65,10 +72,9 @@ it('restores a confirmed payment, key and spendable balance offline', async t =>
   const payment = recovered.send(new Account().publicKey, 500)
   assert.ok(await recovered.mineAsync())
   assert.ok(recovered.transaction(hex(payment.tx.id))?.block)
-})
+}))
 
-it('persists imports and refuses a second writer, wrong passphrase or missing wallet', t => {
-  const { open, root } = fixture(t)
+it('persists imports and refuses a second writer, wrong passphrase or missing wallet', withFixture(({ open, root }) => {
   const account = new Account()
   const node = open('wallet')
   node.importAccount(account)
@@ -83,10 +89,9 @@ it('persists imports and refuses a second writer, wrong passphrase or missing wa
   reopened.stop()
   unlinkSync(wallet)
   assert.throws(() => open('wallet'), /Missing wallet/)
-})
+}))
 
-it('rejects altered wallet fields without replacing the encrypted file', t => {
-  const { open, root } = fixture(t)
+it('rejects altered wallet fields without replacing the encrypted file', withFixture(({ open, root }) => {
   open('envelope').stop()
   const file = join(root, 'envelope/wallet.json')
   const original = JSON.parse(readFileSync(file, 'utf8'))
@@ -102,10 +107,9 @@ it('rejects altered wallet fields without replacing the encrypted file', t => {
   }
   writeFileSync(file, JSON.stringify(original))
   open('envelope').stop()
-})
+}))
 
-it('restores local pending sends, reserves their inputs and relays them on reconnect', async t => {
-  const { open } = fixture(t)
+it('restores local pending sends, reserves their inputs and relays them on reconnect', withFixture(async ({ open }) => {
   const a = open('a'), b = open('b')
   await a.mineAsync()
   const { tx } = a.send(b.account.publicKey, 1000)
@@ -122,10 +126,9 @@ it('restores local pending sends, reserves their inputs and relays them on recon
   await until(() => restored.current.equals(mined))
   restored.stop()
   assert.ok(open('a').transaction(hex(tx.id))?.block?.equals(mined))
-})
+}))
 
-it('restores a fork and its indexes identically after restart and full replay', async t => {
-  const { open } = fixture(t)
+it('restores a fork and its indexes identically after restart and full replay', withFixture(async ({ open }) => {
   const a = open('a'), b = open('b')
   a.start(0)
   b.start(0)
@@ -162,10 +165,9 @@ it('restores a fork and its indexes identically after restart and full replay', 
     assert.deepEqual(node.getUnspentOutputs(b.account.publicKey), b.getUnspentOutputs())
     node.stop()
   }
-})
+}))
 
-it('rolls back a rebuild if a stored historical block is damaged', async t => {
-  const { root, open } = fixture(t)
+it('rolls back a rebuild if a stored historical block is damaged', withFixture(async ({ root, open }) => {
   const node = open('history')
   await node.mineAsync()
   await node.mineAsync()
@@ -179,10 +181,9 @@ it('rolls back a rebuild if a stored historical block is damaged', async t => {
   const after = new Database(filename, { readonly: true })
   assert.deepEqual(after.prepare('SELECT COUNT(*) AS count FROM outputs').get(), count)
   after.close()
-})
+}))
 
-it('keeps the old tip and pending payment when an index write fails', async t => {
-  const { root, open } = fixture(t)
+it('keeps the old tip and pending payment when an index write fails', withFixture(async ({ root, open }) => {
   const original = open('disk-error')
   const tip = await original.mineAsync()
   assert.ok(tip)
@@ -205,10 +206,9 @@ it('keeps the old tip and pending payment when an index write fails', async t =>
   const confirmed = await recovered.mineAsync()
   assert.ok(confirmed)
   assert.ok(recovered.block(hex(tip.hash()))?.next?.equals(confirmed))
-})
+}))
 
-it('recovers the entire old ledger when killed inside an uncommitted rewind', { timeout: 10000 }, async t => {
-  const { open, root } = fixture(t)
+it('recovers the entire old ledger when killed inside an uncommitted rewind', { timeout: 10000 }, withFixture(async ({ open, root }) => {
   const node = open('crash')
   await node.mineAsync()
   const { tx } = node.send(new Account().publicKey, 1000)
@@ -216,15 +216,17 @@ it('recovers the entire old ledger when killed inside an uncommitted rewind', { 
   assert.ok(tip)
   const balance = node.getBalance()
   node.stop()
-  const child = spawn(process.execPath, ['--import', 'tsx', fileURLToPath(new URL('./fixtures/interrupted-write.mts', import.meta.url)), join(root, 'crash')])
-  t.after(() => child.kill('SIGKILL'))
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/interrupted-write.mjs', import.meta.url)), join(root, 'crash')])
   const exited = once(child, 'exit')
-  const [signal] = await Promise.race([once(child.stdout, 'data'), exited.then(() => { throw new Error('Child exited before its transaction') })])
-  assert.match(signal.toString(), /uncommitted/)
-  child.kill('SIGKILL')
-  await exited
+  try {
+    const [signal] = await Promise.race([once(child.stdout, 'data'), exited.then(() => { throw new Error('Child exited before its transaction') })])
+    assert.match(signal.toString(), /uncommitted/)
+  } finally {
+    child.kill('SIGKILL')
+    await exited
+  }
   const restored = open('crash')
   assert.ok(restored.current.equals(tip))
   assert.equal(restored.getBalance(), balance)
   assert.ok(restored.transaction(hex(tx.id))?.block?.equals(tip))
-})
+}))
