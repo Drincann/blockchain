@@ -1,3 +1,4 @@
+import { MAX_PEER_MESSAGE_BYTES } from '../../app/config.mts'
 import { WebSocket } from 'ws'
 import { Message, MessageType } from './types.mts'
 
@@ -15,11 +16,23 @@ export class Peer {
   constructor(
     public address: string,
     public ws: WebSocket,
-    private waitResponse: (id: number, callback: (message: Message) => void) => void
+    private waitResponse: (id: number, callback: (message: Message) => void) => () => void
   ) { }
 
+  public send(message: Message, callback?: (error?: Error) => void) {
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      callback?.(new Error('Peer disconnected'))
+      return
+    }
+    if (this.ws.bufferedAmount > MAX_PEER_MESSAGE_BYTES * 2) {
+      this.ws.close(1013, 'Peer is not keeping up')
+      callback?.(new Error('Peer send buffer full'))
+      return
+    }
+    this.ws.send(JSON.stringify(message), callback)
+  }
+
   public createSession(message?: Message): Session {
-    const ws = this.ws
     return {
       data: message?.data,
       peer: this,
@@ -30,10 +43,10 @@ export class Peer {
         if (message?.id === undefined) {
           return
         }
-        ws.send(JSON.stringify({ type: 'response', id: message.id, data }))
+        this.send({ type: 'response', id: message.id, data })
       },
       send: (type: MessageType, data: Record<string, any>) => {
-        ws.send(JSON.stringify({ type, data }))
+        this.send({ type, data })
       }
     }
   }
@@ -41,14 +54,15 @@ export class Peer {
   private request(message: Message): Promise<Record<string, any>> {
     const id = this.syncId++
     const request = { ...message, id }
-    const promise = new Promise((resolve, reject) => {
-      this.waitResponse(id, resolve)
-      setTimeout(() => {
-        reject(new Error('Request timed out'))
-      }, 3000)
-    })
-
-    this.ws.send(JSON.stringify(request))
-    return promise.then((message) => (message as any)?.data ?? {}) as Promise<Record<string, any>>
+    let unregister: (() => void) | undefined
+    let timer: NodeJS.Timeout
+    return new Promise<Message>((resolve, reject) => {
+      unregister = this.waitResponse(id, resolve)
+      timer = setTimeout(() => reject(new Error('Request timed out')), 3000)
+      this.send(request, error => { if (error) reject(error) })
+    }).finally(() => {
+      clearTimeout(timer)
+      unregister?.()
+    }).then(reply => reply.data ?? {})
   }
 }

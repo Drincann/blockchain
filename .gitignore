@@ -2,3 +2,7 @@ node_modules
 .DS_Store
 .vscode
 dist/
+.blockchain/
+chain.sqlite*
+wallet.json
+wallet.json.*.tmp

@@ -7,11 +7,7 @@ import { Transaction, TxOut, TxIn } from "../src/domain/transaction/transaction.
 describe('Account', () => {
   it('account gen', () => {
     const account = new Account()
-    console.log('private key:', hex(account.privateKey))
-    console.log('public key :', hex(account.publicKey))
     const sameAccount = new Account(account.privateKey)
-    console.log('same private key:', hex(sameAccount.privateKey))
-    console.log('same public key :', hex(sameAccount.publicKey))
 
     assert(hex(account.privateKey) === hex(sameAccount.privateKey), 'private keys should match')
     assert(hex(account.publicKey) === hex(sameAccount.publicKey), 'public keys should match')
@@ -28,10 +24,36 @@ describe('Account', () => {
     const account = new Account()
     const data = new TextEncoder().encode('hello world')
     const signature = account.sign(data)
-    console.log('data     :', hex(data))
-    console.log('signature:', hex(signature))
     assert.ok(Account.verify(data, signature, account.publicKey), 'verify should pass')
     assert.ok(!Account.verify(data, signature, new Account().publicKey), 'verify should fail with different public key')
+  })
+
+  it('verifies a DER signature from the previous wallet implementation', () => {
+    const owner = new Account(Uint8Array.of(1))
+    const tx = new Transaction().addInput(new TxIn('12'.repeat(32), 1)).addOutput(new TxOut(1000, owner.publicKey))
+    const signature = Buffer.from('304602210087e50951d1b1a7457b2de9e2b58365ced45202e83bbbe240ce66c0d6503a08ef0221009eae08dd06d11aa7d1d3ae3e8f3cddbc263d4a66f492df4ef1fbf8b793d20ec5', 'hex')
+    tx.inputs[0].setSignature(signature)
+    assert.equal(hex(tx.id), '77dcf0eb6a855d6b7a39b278d163164276e0a2be7d631330dad4f9ab71b804e5')
+    assert.ok(Account.verifyTxIn(tx, 0, owner.publicKey))
+  })
+
+  it('binds a signature to the whole message', () => {
+    const owner = new Account()
+    const message = Buffer.from('A payment note long enough to span a complete digest.')
+    const signature = owner.sign(message)
+    assert.ok(Account.verify(message, signature, owner.publicKey))
+    assert.equal(Account.verify(Buffer.concat([message, Buffer.from('edited')]), signature, owner.publicKey), false)
+  })
+
+  it('separates ordinary messages from transaction authorizations', () => {
+    const owner = new Account()
+    const tx = new Transaction().addInput(new TxIn('12'.repeat(32), 0)).addOutput(new TxOut(50, owner.publicKey))
+    const messageSignature = owner.sign(tx.id)
+    owner.signTxIn(tx, 0)
+    assert.ok(Account.verify(tx.id, messageSignature, owner.publicKey))
+    assert.equal(Account.verify(tx, messageSignature, owner.publicKey), false)
+    assert.equal(Account.verify(tx.id, tx.inputs[0].signature!, owner.publicKey), false)
+    assert.ok(Account.verifyTxIn(tx, 0, owner.publicKey))
   })
 
   it('account sign/verify transaction', () => {
@@ -41,7 +63,6 @@ describe('Account', () => {
       .addOutput(new TxOut(100_000_000, receiver.publicKey))
 
     const signedTx = sender.signTxIn(tx, 0)
-    console.log('transaction:', signedTx)
     assert.ok(Account.verifyTxIn(tx, 0, sender.publicKey), 'verify should pass')
   })
 
@@ -56,7 +77,6 @@ describe('Account', () => {
 
     sender1.signTxIn(tx, 0)
     sender2.signTxIn(tx, 1)
-    console.log('transaction:', tx)
     assert.ok(Account.verifyTxIn(tx, 0, sender1.publicKey), 'verify input 0 should pass')
     assert.ok(Account.verifyTxIn(tx, 1, sender2.publicKey), 'verify input 1 should pass')
   })

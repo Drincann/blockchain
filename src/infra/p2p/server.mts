@@ -1,22 +1,27 @@
 import { WebSocketServer, WebSocket } from "ws"
 import { Peer, Session } from "./peer.mts"
-import { Message, MessageType } from "./types.mts"
-import { config } from "../../app/config.mts"
+import { isMessage, isPeerAddress, Message, MessageType } from "./types.mts"
+import { config, MAX_CONNECTED_PEERS, MAX_DISCOVERED_PEERS, MAX_PEER_MESSAGE_BYTES } from "../../app/config.mts"
 import { uuid } from "../../util/crypto.mts"
 
 export class Server {
   private nodeId = uuid()
   private wss: WebSocketServer
-  private handlers: Record<string, (session: Session) => Promise<any>> = {} as any
+  private handlers = new Map<MessageType, (session: Session) => Promise<unknown>>()
   private connectHandler: (session: Session) => unknown = () => { }
   private peers: Peer[] = []
   private knownAddresses: Set<string> = new Set()
   private stopping = false
   private refreshInterval: NodeJS.Timeout | null = null
 
-  constructor({ port }: { port: number }) {
-    this.wss = new WebSocketServer({ port })
+  constructor({ port, host }: { port: number, host?: string }) {
+    this.wss = new WebSocketServer({ port, host, maxPayload: MAX_PEER_MESSAGE_BYTES })
     this.wss.on('connection', (ws, req) => {
+      if (this.peers.length >= MAX_CONNECTED_PEERS) {
+        ws.on('error', () => ws.terminate())
+        ws.close(1013, 'Peer capacity reached')
+        return
+      }
       const peer = this.setupSocket(ws, req.socket.remoteAddress + ':' + req.socket.remotePort)
       if (peer) {
         this.connectHandler(peer.createSession())
@@ -43,10 +48,15 @@ export class Server {
   private async discoverNewPeersFrom(peer: Peer) {
     const response = await peer.createSession().request('getpeers', {}).catch(() => ({ peers: [] }))
     if (Array.isArray(response.peers)) {
-      response.peers.forEach((address: string) => {
-        this.knownAddresses.add(address)
-      })
+      for (const address of response.peers.slice(0, MAX_DISCOVERED_PEERS)) {
+        if (this.knownAddresses.size >= MAX_DISCOVERED_PEERS) break
+        if (isPeerAddress(address)) this.knownAddresses.add(address)
+      }
     }
+  }
+
+  public discoveredAddresses(): string[] {
+    return [...this.knownAddresses]
   }
 
   public getPeersAddresses(): string[] {
@@ -65,7 +75,7 @@ export class Server {
   }
 
   public on(type: Exclude<MessageType, 'nodeinfo' | 'response'>, handler: (session: Session) => Promise<any>) {
-    this.handlers[type] = handler
+    this.handlers.set(type, handler)
     return this
   }
 
@@ -75,18 +85,7 @@ export class Server {
   }
 
   public broadcast(message: Message) {
-    const peers: Peer[] = []
-    if (this.peers.length < 8) {
-      peers.push(...this.peers)
-    } else {
-      peers.push(...this.randomPeers(8))
-    }
-
-    peers.forEach(peer => {
-      if (peer.ws.readyState === WebSocket.OPEN) {
-        peer.ws.send(JSON.stringify(message))
-      }
-    })
+    for (const peer of this.peers) peer.send(message)
   }
 
   private randomPeers(num: number): Peer[] {
@@ -105,9 +104,10 @@ export class Server {
   }
 
   public connect(address: string): Promise<Peer | null> {
+    if (this.stopping || this.peers.length >= MAX_CONNECTED_PEERS || !isPeerAddress(address)) return Promise.resolve(null)
     return new Promise((resolve) => {
       try {
-        const socket = new WebSocket("ws://" + address)
+        const socket = new WebSocket("ws://" + address, { maxPayload: MAX_PEER_MESSAGE_BYTES })
         const peer = this.setupSocket(socket, address)
         let open = false
         socket.once('error', () => { resolve(null) })
@@ -139,7 +139,8 @@ export class Server {
   }
 
   private handleNodeInfo(peer: Peer, message: Message) {
-    if (isInvalidHandshake(message.data)) {
+    if (typeof message.data.nodeId !== 'string' || message.data.nodeId.length > 128 ||
+        (message.data.listenAddress != null && message.data.listenAddress !== '' && !isPeerAddress(message.data.listenAddress))) {
       console.error('Invalid nodeinfo data')
       peer.ws.close()
       this.peers = this.peers.filter(p => p !== peer)
@@ -151,7 +152,7 @@ export class Server {
       this.peers = this.peers.filter(p => p !== peer)
       return
     }
-    if (message.data.listenAddress?.trim().length > 0) {
+    if (message.data.listenAddress) {
       peer.listenAddress = message.data.listenAddress
     }
     return
@@ -159,17 +160,29 @@ export class Server {
 
   private setupSocket(ws: WebSocket, address: string): Peer | null {
     try {
-      const pendingRequests: Record<number, (message: Message) => void> = {}
+      const pendingRequests = new Map<number, (message: Message) => void>()
 
-      const peer = new Peer(address, ws, (syncId, callback) => { pendingRequests[syncId] = callback })
+      const peer = new Peer(address, ws, (syncId, callback) => {
+        pendingRequests.set(syncId, callback)
+        return () => { pendingRequests.delete(syncId) }
+      })
 
       this.peers.push(peer)
       ws.on('message', async (data: Buffer) => {
         try {
-          const message = JSON.parse(data.toString()) as Message
+          let message: unknown
+          try {
+            message = JSON.parse(data.toString())
+          } catch {
+            ws.close(1008, 'Invalid JSON')
+            return
+          }
+          if (!isMessage(message)) {
+            ws.close(1008, 'Invalid message')
+            return
+          }
           if (message.type === 'response' && message.id !== undefined) {
-            const callback = pendingRequests[message.id]
-            delete pendingRequests[message.id]
+            const callback = pendingRequests.get(message.id)
             callback?.(message)
             return
           }
@@ -184,7 +197,7 @@ export class Server {
             return
           }
 
-          const handler = this.handlers[message.type]
+          const handler = this.handlers.get(message.type)
           if (!handler) {
             console.error(`WebSocket handler for ${message.type} not found`)
             return
@@ -200,7 +213,6 @@ export class Server {
 
       ws.on('close', () => {
         this.peers = this.peers.filter(p => p !== peer)
-        this.tryConnectAnother()
       })
       ws.on('error', (error) => {
         this.peers = this.peers.filter(p => p !== peer)
@@ -213,28 +225,4 @@ export class Server {
     }
   }
 
-
-  private async tryConnectAnother() {
-    while (!this.stopping && this.peers.length < 8 && this.knownAddresses.size > 0) {
-      const address = pop(this.knownAddresses)
-      if (address != null && this.peers.find(p => p.address === address) == null) {
-        const newPeer = await this.connect(address)
-        if (newPeer) {
-          return
-        }
-      }
-    }
-  }
-}
-
-function pop<T>(set: Set<T>): T | undefined {
-  for (const item of set) {
-    set.delete(item)
-    return item
-  }
-  return undefined
-}
-
-function isInvalidHandshake(data: Record<string, any>) {
-  return data === undefined || typeof data.nodeId !== 'string'
 }

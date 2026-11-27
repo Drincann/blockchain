@@ -1,17 +1,38 @@
-import { createInterface } from 'node:readline'
+import { clearScreenDown, cursorTo, moveCursor } from 'node:readline'
+import { commandReader, help } from './console.mts'
 import { Account } from '../domain/transaction/account.mts'
-import { Node } from '../infra/node/node.mts'
+import { startNode } from './startup.mts'
 import { hex, hexBytes } from '../util/crypto.mts'
 
-const node = new Node()
-node.start(parseInt(process.argv[2] || '3001'))
-
-
-const write = (chars: string) => {
-  process.stdout.write(chars)
+const args = process.argv.slice(2)
+if (args.includes('--help') || args.includes('-h')) {
+  process.stdout.write('Usage: pnpm start [port] [--data-dir DIRECTORY] [--reindex] [--memory]\n\n' + help)
+  process.exit(0)
 }
 
-const lines = createInterface({ input: process.stdin, terminal: false })
+const node = await startNode(args).catch(error => {
+  console.error(error.message)
+  process.exit(1)
+})
+
+
+const lines = commandReader(process.stdin, process.stdout, !!(process.stdin.isTTY && process.stdout.isTTY))
+let inputClosed = false
+let waitingForCommand = false
+lines.once('close', () => { inputClosed = true })
+
+const write = (chars: string) => {
+  const redraw = waitingForCommand && lines.terminal && !inputClosed && process.env.TERM !== 'dumb'
+  if (redraw) {
+    const { rows } = lines.getCursorPos()
+    if (rows) moveCursor(process.stdout, 0, -rows)
+    cursorTo(process.stdout, 0)
+    clearScreenDown(process.stdout)
+  }
+  process.stdout.write(chars)
+  if (redraw) lines.prompt(true)
+}
+
 const commands = lines[Symbol.asyncIterator]()
 
 let stoploop = false
@@ -35,17 +56,28 @@ const mineloop = async (data: string) => {
 }
 
 write('\nSimple Blockchain CLI\n')
-write('Enter "q" to quit\n\n')
+write('Type "help" for commands or "q" to quit\n\n')
 
 while (true) {
-  write('> ')
+  if (lines.terminal) {
+    if (!inputClosed) lines.prompt()
+  } else {
+    write('> ')
+  }
+  waitingForCommand = true
   const line = await commands.next()
+  waitingForCommand = false
   if (line.done) break
   const input = line.value.trim().split(/\s+/).filter(Boolean)
   if (input[0] === 'q') {
     break
   }
 
+
+  if (input[0] === 'help') {
+    write(help)
+    continue
+  }
 
   if (input[0] === 'importprivatekey') {
     if (input[1] === undefined) {
@@ -68,12 +100,19 @@ while (true) {
         const balance = node.getBalance(key)
         write(`balance: ${balance} sats (${balance / 100_000_000} bitcoin)\n`)
       } else {
-        const unspent = node.getUnspentOutputs(key)
+        const page = Number(input[2] ?? 1)
+        if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(page * 100)) {
+          write('usage: unspent [publicKey] [page]\n')
+          continue
+        }
+        const offset = (page - 1) * 100
+        const unspent = node.getUnspentOutputs(key, 101, offset)
         if (unspent.length === 0) {
           write('no unspent outputs\n')
         } else {
-          write(`unspent outputs:\n${unspent.map((u, i) => i + ': ' + JSON.stringify(u.display(), null, 2)).join('\n')}\n`)
+          write(`unspent outputs:\n${unspent.slice(0, 100).map((u, i) => (offset + i) + ': ' + JSON.stringify(u.display(), null, 2)).join('\n')}\n`)
         }
+        if (unspent.length > 100) write(`more: unspent ${input[1] ?? hex(node.account.publicKey)} ${page + 1}\n`)
       }
     } catch (e) {
       write(`invalid public key: ${(e as Error).message}\n`)
@@ -105,7 +144,7 @@ while (true) {
   if (input[0] === 'account') {
     write(`balance: ${node.getBalance()} sats (${node.getBalance() / 100_000_000} bitcoin)\n\n`)
     write(`publicKey: ${hex(node.account.publicKey)}\n`)
-    write(`privateKey: ${hex(node.account.privateKey)}\n`)
+    if (input[1] === 'private') write(`privateKey: ${hex(node.account.privateKey)}\n`)
     continue
   }
 
@@ -139,6 +178,12 @@ while (true) {
     const address = input[1] === 'add' ? input[2] : input[1]
     if (!address) {
       write('usage: peer add <address> | peer list\n')
+      continue
+    }
+
+    if (input[1] === 'discovered') {
+      const addresses = node.discoveredPeers()
+      write(addresses.length ? `discovered: ${addresses.join(', ')}\n` : 'no discovered peers\n')
       continue
     }
 

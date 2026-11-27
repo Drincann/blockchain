@@ -1,4 +1,4 @@
-import { bitString, hex, hexBytes, sha256 } from "../../util/crypto.mts"
+import { hex, hexBytes, isHash, sha256 } from "../../util/crypto.mts"
 import { MAX_BLOCK_TX_BYTES, MAX_FUTURE_DRIFT_IN_MILLS, MEDIAN_TIME_PAST_WINDOW } from "../../app/config.mts"
 import { BlockMiner } from "../../infra/miner/miner.mts"
 import { Transaction } from "../transaction/transaction.mts"
@@ -48,10 +48,18 @@ export class Block {
       return false
     }
     const { hash, height } = blockSummary as BlockSummary
-    return typeof hash === 'string' && typeof height === 'number'
+    return isHash(hash) && Number.isSafeInteger(height) && height >= 0
   }
 
-  public next: Block | null = null
+  private successor: Block | (() => Block | null) | null = null
+
+  public get next(): Block | null {
+    return typeof this.successor === 'function' ? this.successor() : this.successor
+  }
+
+  public set next(block: Block | null) {
+    this.successor = block
+  }
 
   public static readonly GENESIS_BLOCK: Uint8Array = Block.serialize({
     height: 0,
@@ -172,11 +180,21 @@ export class Block {
   }
 
   public isProofValid(): boolean {
-    return [...bitString(this.hash()).slice(0, this.block.difficulty)].every(b => b === '0')
+    return Block.meetsDifficulty(this.hash(), this.difficulty)
   }
 
-  public connect(next: Block) {
-    this.next = next
+  public static meetsDifficulty(hash: Hash, bits: number): boolean {
+    if (hash.length !== 32 || !Number.isInteger(bits) || bits < 0 || bits > 255) return false
+    const wholeBytes = Math.floor(bits / 8)
+    for (let i = 0; i < wholeBytes; i++) {
+      if (hash[i] !== 0) return false
+    }
+    const remainder = bits % 8
+    return remainder === 0 || hash[wholeBytes] >>> (8 - remainder) === 0
+  }
+
+  public connect(next: Block | (() => Block | null)) {
+    this.successor = next
   }
 
   public static medianTimePast(recentTimestamps: number[]): number {
@@ -259,6 +277,9 @@ export class Block {
       const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
       const height = view.getBigUint64(0, false)
       const ts = view.getBigUint64(8, false)
+      if (height > BigInt(Number.MAX_SAFE_INTEGER) || ts > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error('Block height or timestamp outside the exact integer range')
+      }
       const prev = bytes.slice(16, 48)
       const difficulty = view.getUint8(48)
       const nonce = bytes.slice(49, 81)
