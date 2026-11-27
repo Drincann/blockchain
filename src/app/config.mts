@@ -5,6 +5,10 @@ const jsonConfig = JSON.parse(
 )
 
 export const SYNC_BATCH_SIZE = 64
+export const MAX_CONNECTED_PEERS = 64
+export const MAX_DISCOVERED_PEERS = 128
+// A batch of 64 full, hex-encoded blocks fits below 2 MiB including the JSON envelope.
+export const MAX_PEER_MESSAGE_BYTES = 2 * 1024 * 1024
 export const MAX_PENDING_TRANSACTIONS = 1024
 export const MAX_BLOCK_TX_BYTES = 10240
 export const COINBASE_REWARD = 5_000_000_000

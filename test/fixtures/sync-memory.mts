@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { setTimeout as delay } from 'node:timers/promises'
+import { listenLocal } from './listen-local.mts'
 import { Node } from '../../src/infra/node/node.mts'
 
 const [dataDir, port, expectedHeight, expectedTip] = process.argv.slice(2)
 const options = { dataDir, passphrase: 'memory test' }
 const node = new Node(options)
 try {
-  node.start(0)
+  await listenLocal(node)
   assert.ok(await node.addPeer('127.0.0.1:' + port))
   const deadline = Date.now() + 120_000
   while (node.current.height < Number(expectedHeight)) {

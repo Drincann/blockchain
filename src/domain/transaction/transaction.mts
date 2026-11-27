@@ -1,6 +1,11 @@
 import { hex, hexBytes, sha256 } from "../../util/crypto.mts"
 import { removeDERPadding, padSuffix } from '../../util/common.mts'
 
+export function checkedSats(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('Amount outside the exact satoshi range')
+  return value
+}
+
 /**
  * serialization: 108 bytes
  * 0-31 txid (32 bytes transaction sha256 hash)
@@ -38,7 +43,10 @@ class Input {
   }
 
   constructor(tx: string, index: number, signature?: Uint8Array) {
-    this._txid = tx
+    if (!/^[0-9a-f]{64}$/i.test(tx) || !Number.isInteger(index) || index < 0 || index > 0xffffffff) {
+      throw new Error('Invalid transaction outpoint')
+    }
+    this._txid = tx.toLowerCase()
     this._index = index
     if (signature != undefined) {
       this._signature = padSuffix(signature, 72)
@@ -107,7 +115,7 @@ class Output {
   }
 
   public set amount(value: number) {
-    this._amount = value
+    this._amount = checkedSats(value)
   }
 
   public get publicKey() {
@@ -115,7 +123,7 @@ class Output {
   }
 
   constructor(amount: number, publicKey: Uint8Array) {
-    this._amount = amount
+    this._amount = checkedSats(amount)
     this._publicKey = publicKey
   }
 
@@ -189,7 +197,7 @@ export class Transaction {
   }
 
   public get outputValue(): number {
-    return this._outputs.reduce((sum, output) => sum + output.amount, 0)
+    return checkedSats(this._outputs.reduce((sum, output) => sum + output.amount, 0))
   }
 
   constructor() { }
@@ -202,6 +210,14 @@ export class Transaction {
   public addOutput(output: Output): Transaction {
     this._outputs.push(output)
     return this
+  }
+
+  public validateCoinbase(height: number, maximum: number) {
+    if (this.inputs.length !== 1 || !this.inputs[0].isCoinbase ||
+        this.inputs[0].index !== height || this.outputs.length !== 1) {
+      throw new Error('Invalid coinbase transaction')
+    }
+    if (this.outputValue > checkedSats(maximum)) throw new Error('Coinbase transaction output exceeds maximum')
   }
 
   public bytesLength(): number {

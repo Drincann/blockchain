@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { Transaction } from '../../src/domain/transaction/transaction.mts'
+import { listenLocal } from '../fixtures/listen-local.mts'
 import { Node } from '../../src/infra/node/node.mts'
 import { BlockStorage } from '../../src/infra/persistence/storage.mts'
 import { BLOCK_GENERATION_TARGET_IN_MILLS, COINBASE_REWARD } from '../../src/app/config.mts'
@@ -54,7 +55,7 @@ it('syncs ten times more blocks in a fresh receiver with bounded peak memory', {
       extendFixture(join(options.dataDir, 'chain.sqlite'), owner, height)
       const source = new Node(options)
       try {
-        source.start(0)
+        await listenLocal(source)
         const address = source['server']!['wss'].address()
         assert.ok(address && typeof address !== 'string')
         const { stdout } = await promisify(execFile)(process.execPath, [

@@ -36,3 +36,7 @@ export function bitString(bytes: Uint8Array): string {
     .map(b => b.toString(2).padStart(8, "0"))
     .join("");
 }
+
+export function isHash(value: unknown): value is string {
+  return typeof value === 'string' && value.length === 64 && /^[0-9a-f]+$/.test(value)
+}

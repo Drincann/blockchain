@@ -3,6 +3,14 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, r
 import { dirname, join } from 'node:path'
 import { Account } from '../../domain/transaction/account.mts'
 
+function envelopeBytes(value: unknown, minBytes: number, maxBytes = minBytes): Buffer {
+  if (typeof value !== 'string' || value.length < 2 * minBytes || value.length > 2 * maxBytes ||
+      value.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(value)) {
+    throw new Error('Invalid wallet file')
+  }
+  return Buffer.from(value, 'hex')
+}
+
 /** The file holds one active key. Imports replace it only after the new envelope reaches disk. */
 export class WalletFile {
   private readonly filename: string
@@ -24,15 +32,15 @@ export class WalletFile {
 
     const envelope = JSON.parse(readFileSync(this.filename, 'utf8'))
     if (envelope.version !== 1) throw new Error('Unsupported wallet file version')
-    this.salt = Buffer.from(envelope.salt, 'hex')
-    const iv = Buffer.from(envelope.iv, 'hex')
-    const tag = Buffer.from(envelope.tag, 'hex')
-    if (this.salt.length !== 16 || iv.length !== 12 || tag.length !== 16) throw new Error('Invalid wallet file')
+    this.salt = envelopeBytes(envelope.salt, 16)
+    const iv = envelopeBytes(envelope.iv, 12)
+    const tag = envelopeBytes(envelope.tag, 16)
+    const encrypted = envelopeBytes(envelope.data, 1, 32)
     this.key = scryptSync(passphrase, this.salt, 32)
     try {
       const cipher = createDecipheriv('aes-256-gcm', this.key, iv, { authTagLength: 16 })
       cipher.setAuthTag(tag)
-      const plaintext = Buffer.concat([cipher.update(Buffer.from(envelope.data, 'hex')), cipher.final()])
+      const plaintext = Buffer.concat([cipher.update(encrypted), cipher.final()])
       try { this.account = new Account(plaintext) } finally { plaintext.fill(0) }
     } catch {
       throw new Error('Cannot unlock wallet. Check the passphrase and wallet file.')

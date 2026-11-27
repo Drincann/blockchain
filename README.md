@@ -44,14 +44,17 @@ pnpm start 3001 --data-dir ./alice-node
 
 ## Commands
 
+Type `help` at the prompt, or run `pnpm start --help` before opening a wallet. In a terminal, use ↑ and ↓ to recall and edit commands from this session. Private-key import commands are excluded from history.
+
 > required arguments: `<arg1>`; optional arguments: `[arg1]`
 
-- `account` – show your node’s public & private keys plus current balance.
+- `account` – show your public key and balance. Use `account private` to explicitly reveal the private key for a backup.
 - `balance [publicKeyHex]` – check your wallet or another wallet’s balance in sats.
 - `mine [text]` – mine a single block that includes the given text in the coinbase message.
+- `mineasync [text]` – mine one block in the background.
 - `mineloop [text]` / `stoploop` – keep mining blocks until you stop the loop.
 - `send <toPublicKeyHex> <amount>` – create and broadcast a signed transaction from your wallet.
-- `peer add <host:port>` / `peer list` – connect to another node or list connected peers.
+- `peer add <host:port>` / `peer list` – connect to another node or list connected peers. Use `peer discovered` to inspect addresses reported by other nodes. Connections are initiated only for addresses you select with `peer add`.
 - `block [hash]` – view the latest block or a specific block.
 - `blocktxs <hash>` – list the transactions inside a block.
 - `tx <txid>` – inspect a transaction (mempool or confirmed).
@@ -63,7 +66,7 @@ pnpm start 3001 --data-dir ./alice-node
 
 - Proof-of-work mining with automatic difficulty targets and a halving coinbase reward.
 - Peer-to-peer syncing over WebSockets so nodes exchange blocks and transactions.
-- Wallet with elliptic curve keys, UTXO tracking, and signed transactions.
+- Wallet with secp256k1 keys, UTXO tracking, and signed transactions. Existing on-chain DER signatures remain valid. The `Account.sign` API signs a transaction when passed a `Transaction`. Byte messages use a separate tagged digest; older standalone message signatures need to be reissued.
 
 ## Run a small network
 
@@ -91,3 +94,5 @@ pnpm test
 ```
 
 Run `pnpm test:scale` to compare peak receiver memory while syncing generated histories of 1,000 and 10,000 reward-only blocks in separate processes.
+
+Run `pnpm test:network` for the local partition-and-recovery test. It uses 32 temporary node directories and 1,024 signed payments in the shared history. It reconnects two competing branches, relays one more payment across the live network, and checks all wallet balances against an independent ledger after restart.

@@ -22,6 +22,17 @@ function run(commands: string[]): string {
 }
 
 describe('CLI', () => {
+  it('prints startup help without a wallet and interactive help without exiting', () => {
+    const result = spawnSync(process.execPath, [tsx, cli, '--help'], { encoding: 'utf8', timeout: 5000 })
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /peer add <host:port>/)
+    const output = run(['help', 'balance', 'q'])
+    assert.match(output, /mineasync/)
+    assert.match(output, /balance: 0 sats/)
+    assert.doesNotMatch(run(['account', 'q']), /privateKey:/)
+    assert.match(run(['account private', 'q']), /privateKey: [0-9a-f]{64}/)
+  })
+
   it('keeps the active account after an invalid import and rejects a partial amount', () => {
     const output = run(['account', 'importprivatekey 00', 'account', 'send 04 1e3', 'q'])
     const keys = [...output.matchAll(/publicKey: (\w+)/g)].map(match => match[1])

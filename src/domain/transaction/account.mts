@@ -1,72 +1,62 @@
-import { ECDH } from 'node:crypto'
-import elliptic from 'elliptic'
-import { Transaction } from './transaction.mts';
+import { createHash, ECDH } from 'node:crypto'
+import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { Transaction } from './transaction.mts'
 
-var ec = new elliptic.ec('secp256k1');
+function signingDigest(data: Uint8Array | Transaction): Uint8Array {
+  if (data instanceof Transaction) return data.id
+  return createHash('sha256').update('Simple Blockchain signed message\0').update(data).digest()
+}
 
 export class Account {
-
-  private key: elliptic.ec.KeyPair
+  private readonly secret: Uint8Array
+  private readonly publicBytes: Uint8Array
 
   constructor(privateKey?: Uint8Array) {
     if (privateKey) {
-      if (privateKey.length === 0 || privateKey.length > 32) {
-        throw new Error('Invalid secp256k1 private key length')
-      }
-      const scalar = BigInt('0x' + Buffer.from(privateKey).toString('hex'))
-      const order = BigInt('0x' + ec.curve.n.toString(16))
-      if (scalar === 0n || scalar >= order) {
-        throw new Error('Invalid secp256k1 private key')
-      }
-      this.key = ec.keyFromPrivate(privateKey);
-      return;
+      if (!privateKey.length || privateKey.length > 32) throw new Error('Invalid secp256k1 private key length')
+      this.secret = new Uint8Array(32)
+      this.secret.set(privateKey, 32 - privateKey.length)
+      if (!secp256k1.utils.isValidSecretKey(this.secret)) throw new Error('Invalid secp256k1 private key')
+    } else {
+      this.secret = secp256k1.utils.randomSecretKey()
     }
-
-    this.key = ec.genKeyPair();
+    this.publicBytes = secp256k1.getPublicKey(this.secret, false)
   }
 
   public get privateKey(): Uint8Array {
-    return this.key.getPrivate().toBuffer();
+    return this.secret.slice()
   }
 
   public get publicKey(): Uint8Array {
-    return Buffer.from(this.key.getPublic().encode('array', false))
+    return this.publicBytes.slice()
   }
 
   public static normalizePublicKey(key: Uint8Array): Uint8Array {
     const uncompressed = ECDH.convertKey(key, 'secp256k1', undefined, undefined, 'uncompressed') as Buffer
-    if (uncompressed.length !== 65) {
-      throw new Error('Invalid secp256k1 public key')
-    }
+    if (uncompressed.length !== 65) throw new Error('Invalid secp256k1 public key')
     return uncompressed
   }
 
   public sign(data: Uint8Array | Transaction): Uint8Array {
-    if (data instanceof Transaction) {
-      data = data.serialize()
-    }
-
-    const signature = this.key.sign(data)
-    return new Uint8Array(signature.toDER())
+    return secp256k1.sign(signingDigest(data), this.secret, { prehash: false, format: 'der', extraEntropy: true })
   }
 
   public signTxIn(tx: Transaction, inputIndex: number): Account {
-    const signature = this.sign(tx.id)
-    tx.inputs[inputIndex].setSignature(signature)
+    tx.inputs[inputIndex].setSignature(this.sign(tx))
     return this
   }
 
-  public static verify(data: Uint8Array, signature: Uint8Array, publicKey: Uint8Array): boolean {
-    const key = ec.keyFromPublic(publicKey, 'array')
-    return key.verify(data, signature)
+  public static verify(data: Uint8Array | Transaction, signature: Uint8Array, publicKey: Uint8Array): boolean {
+    // Previously confirmed transactions may contain either valid ECDSA S value.
+    try {
+      return secp256k1.verify(signature, signingDigest(data), publicKey, { prehash: false, format: 'der', lowS: false })
+    } catch {
+      return false
+    }
   }
 
   public static verifyTxIn(tx: Transaction, inputIndex: number, publicKey: Uint8Array): boolean {
-    const key = ec.keyFromPublic(publicKey, 'array')
-    const input = tx.inputs[inputIndex]
-    if (!input.signed()) {
-      return false
-    }
-    return key.verify(tx.id, input.signature!)
+    const signature = tx.inputs[inputIndex]?.signature
+    return signature !== undefined && Account.verify(tx, signature, publicKey)
   }
 }

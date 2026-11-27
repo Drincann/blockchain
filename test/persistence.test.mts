@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { it, type TestContext } from 'node:test'
@@ -83,6 +83,25 @@ it('persists imports and refuses a second writer, wrong passphrase or missing wa
   reopened.stop()
   unlinkSync(wallet)
   assert.throws(() => open('wallet'), /Missing wallet/)
+})
+
+it('rejects altered wallet fields without replacing the encrypted file', t => {
+  const { open, root } = fixture(t)
+  open('envelope').stop()
+  const file = join(root, 'envelope/wallet.json')
+  const original = JSON.parse(readFileSync(file, 'utf8'))
+  for (const field of ['salt', 'iv', 'tag', 'data']) {
+    const bytes = Buffer.from(original[field], 'hex')
+    bytes[0] ^= 1
+    for (const value of [bytes.toString('hex'), original[field] + 'x']) {
+      const altered = JSON.stringify({ ...original, [field]: value })
+      writeFileSync(file, altered)
+      assert.throws(() => open('envelope'), /unlock|Invalid wallet/)
+      assert.equal(readFileSync(file, 'utf8'), altered)
+    }
+  }
+  writeFileSync(file, JSON.stringify(original))
+  open('envelope').stop()
 })
 
 it('restores local pending sends, reserves their inputs and relays them on reconnect', async t => {
