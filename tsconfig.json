@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "module": "NodeNext",
+    "rootDir": "src",
+    "outDir": "dist",
+    "resolveJsonModule": true,
+    "rewriteRelativeImportExtensions": true,
+    "noEmitOnError": true
+  },
+  "include": ["src/**/*.mts", "src/app/config.json"]
+}
